@@ -1,0 +1,25 @@
+# Core dependencies
+requests>=2.31.0
+python-docx>=1.1.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# AI/ML dependencies
+openai>=1.0.0
+anthropic>=0.18.0
+google-generativeai>=0.3.0
+langchain>=0.1.0
+langchain-community>=0.0.10
+
+# RAG and vector store
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# Utilities
+pydantic>=2.5.0
+pyyaml>=6.0.1
+python-multipart>=0.0.6
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
