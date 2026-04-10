@@ -137,6 +137,7 @@ class QdrantVectorDB:
         if self._model is None and HAS_TRANSFORMERS:
             try:
                 # Модель поддерживающая русский и английский
+                logger.info("Загрузка модели эмбеддингов...")
                 self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
                 logger.info("Модель эмбеддингов загружена успешно.")
             except Exception as e:
@@ -149,9 +150,13 @@ class QdrantVectorDB:
 
     def _generate_embedding(self, text: str) -> List[float]:
         """Генерирует векторное представление текста."""
-        if self.model:
-            embedding = self.model.encode(text)
-            return embedding.tolist()
+        model_instance = self.model  # Получаем модель через property
+        if model_instance:
+            try:
+                embedding = model_instance.encode(text, convert_to_numpy=True)
+                return embedding.tolist()
+            except Exception as e:
+                logger.warning(f"Ошибка генерации эмбеддинга: {e}. Используем fallback.")
         # Fallback: простой хэш-вектор для демонстрации без модели
         return [float(hash(text + str(i)) % 1000) / 1000 for i in range(self.dimension)]
 

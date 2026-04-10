@@ -166,7 +166,7 @@ class TestRequirementsAgent:
             content=content,
             title="Тестовые требования",
             user_role='Архитектор',
-            save_to_rag=True
+            save_to_rag=False  # Отключаем сохранение в RAG для теста чтобы избежать загрузки модели
         )
         
         assert result.document_id is not None

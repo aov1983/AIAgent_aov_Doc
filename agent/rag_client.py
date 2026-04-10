@@ -42,19 +42,38 @@ class RAGClient:
         Вычисление схожести между двумя текстами.
         
         В реальной реализации здесь использовались бы векторные эмбеддинги
-        и косинусное сходство. Для демонстрации используем упрощённый подход.
+        и косинусное сходство. Для демонстрации используем улучшенный подход
+        с учётом частичного совпадения слов.
         """
-        # Упрощённая реализация на основе пересечения слов
+        # Упрощённая реализация на основе пересечения слов с улучшением для частичных совпадений
         words1 = set(text1.lower().split())
         words2 = set(text2.lower().split())
         
         if not words1 or not words2:
             return 0.0
         
+        # Прямое пересечение
         intersection = words1 & words2
-        union = words1 | words2
         
-        return len(intersection) / len(union) if union else 0.0
+        # Частичное совпадение (если слово из query содержится в слове из документа)
+        partial_matches = set()
+        for w1 in words1:
+            for w2 in words2:
+                if w1 != w2 and (w1 in w2 or w2 in w1):
+                    partial_matches.add(w1 if len(w1) >= len(w2) else w2)
+        
+        # Объединяем прямые и частичные совпадения
+        total_intersection = len(intersection) + len(partial_matches) * 0.5
+        union = len(words1 | words2)
+        
+        # Базовый score через Jaccard
+        base_score = total_intersection / union if union else 0.0
+        
+        # Бонус за наличие ключевых слов из query в документе
+        query_words_in_doc = sum(1 for w in words1 if w in text2.lower())
+        query_bonus = min(query_words_in_doc / len(words1), 0.3) if words1 else 0.0
+        
+        return min(base_score + query_bonus, 1.0)
     
     def search_similar(
         self, 
