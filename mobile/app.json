@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "AI Architect Agent",
+    "slug": "ai-architect-agent",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#6200EE"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aov1983.aiarchitect",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to access your camera for document scanning",
+        "NSPhotoLibraryUsageDescription": "Allow $(PRODUCT_NAME) to access your photos for document upload"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#6200EE"
+      },
+      "package": "com.aov1983.aiarchitect",
+      "versionCode": 1,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-document-picker",
+      "expo-file-system"
+    ],
+    "extra": {
+      "apiUrl": "http://localhost:8000/api/v1"
+    }
+  }
+}
