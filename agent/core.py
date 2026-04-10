@@ -21,6 +21,8 @@ from .parser import DocumentParser, ParsedDocument
 from .decomposer import Decomposer, DecomposedDocument, AtomicRequirement
 from .classifier import ExecutorClassifier
 from .rag_client import RAGClient, MockRAGClient
+from .rag_storage import rag_db, Chunk
+from .rag_search import rag_searcher
 
 
 # Роли пользователей с доступом к агенту (FR-01, NFR-02)
@@ -331,30 +333,96 @@ class RequirementsAgent:
             )
     
     def _enrich_with_rag_search(self, decomposed_doc: DecomposedDocument) -> DecomposedDocument:
-        """Обогащение требований данными из RAG (FR-05)."""
+        """Обогащение требований данными из RAG (FR-05) с использованием нового модуля поиска."""
         for chapter in decomposed_doc.chapters:
             for section in chapter.sections:
                 for requirement in section.atomic_requirements:
-                    # Поиск похожих требований
-                    similar = self.rag_client.search_similar(
+                    # Поиск похожих требований через новый модуль rag_search
+                    similar_results = rag_searcher.search(
                         query=requirement.fact,
-                        limit=5,
+                        top_k=5,
                         threshold=0.5
                     )
                     
-                    # Обогащение требования
+                    # Поиск дубликатов
+                    duplicates = rag_searcher.find_duplicates(
+                        text=requirement.fact,
+                        threshold=0.85
+                    )
+                    
+                    # Поиск противоречий
+                    contradictions = rag_searcher.find_contradictions(
+                        requirement_text=requirement.fact,
+                        risk_level=requirement.criticality
+                    )
+                    
+                    # Формирование enriched данных
+                    similar_items = []
+                    comments = []
+                    
+                    for res in similar_results:
+                        similar_items.append({
+                            'id': res['chunk_id'],
+                            'similarity_score': res['similarity_score'],
+                            'content': res['content'],
+                            'document_id': res.get('document_id', 'unknown')
+                        })
+                    
+                    # Добавление информации о дубликатах в комментарии
+                    if duplicates:
+                        dup_ids = [d['chunk_id'] for d in duplicates]
+                        comments.append(f"ВНИМАНИЕ: Найдены дубликаты требований: {', '.join(dup_ids[:3])}")
+                    
+                    # Добавление информации о противоречиях в комментарии
+                    if contradictions:
+                        contr_ids = [c['chunk_id'] for c in contradictions]
+                        comments.append(f"ВНИМАНИЕ: Возможные противоречия с требованиями: {', '.join(contr_ids[:3])}")
+                    
+                    # Обогащение требования через декомposer
                     requirement = self.decomposer.enrich_with_similarity(
                         requirement=requirement,
-                        similar_items=similar,
+                        similar_items=similar_items,
                         threshold=0.5
                     )
+                    
+                    # Сохранение комментариев о дубликатах и противоречиях
+                    if comments:
+                        existing_comment = requirement.comments or ""
+                        requirement.comments = f"{existing_comment}\n{' | '.join(comments)}".strip()
         
         return decomposed_doc
     
     def _save_to_rag(self, decomposed_doc: DecomposedDocument, document_id: str):
-        """Сохранение требований в RAG (FR-06)."""
-        all_requirements = []
+        """Сохранение требований в RAG (FR-06) с использованием нового модуля векторной БД."""
+        all_chunks = []
         
+        for chapter in decomposed_doc.chapters:
+            for section in chapter.sections:
+                for requirement in section.atomic_requirements:
+                    # Формируем текстовое представление требования для чанкинга
+                    req_text = f"{requirement.fact}. Риск: {requirement.risk}. Рекомендация: {requirement.recommendation}."
+                    
+                    # Сохраняем как чанк в векторную БД через новый модуль
+                    chunk_metadata = {
+                        'document_id': document_id,
+                        'chapter_title': chapter.title,
+                        'section_title': section.title,
+                        'requirement_type': 'atomic',
+                        'executors': requirement.executors,
+                        'risk_level': requirement.criticality,
+                        'tracing': requirement.tracing
+                    }
+                    
+                    # Используем rag_db для сохранения чанков
+                    chunks = rag_db.save_chunks(
+                        document_id=document_id,
+                        text=req_text,
+                        metadata=chunk_metadata
+                    )
+                    all_chunks.extend(chunks)
+        
+        # Также сохраняем структурированные данные в старый RAG клиент для совместимости
+        all_requirements = []
         for chapter in decomposed_doc.chapters:
             for section in chapter.sections:
                 for requirement in section.atomic_requirements:
@@ -362,8 +430,9 @@ class RequirementsAgent:
                     req_data['architectural_solution'] = '; '.join(requirement.architectural_solutions)
                     all_requirements.append(req_data)
         
-        # Массовое сохранение
         self.rag_client.batch_save_requirements(all_requirements, document_id)
+        
+        return len(all_chunks)
     
     def _generate_report(self, decomposed_doc: DecomposedDocument) -> str:
         """
