@@ -21,7 +21,7 @@ from .parser import DocumentParser, ParsedDocument
 from .decomposer import Decomposer, DecomposedDocument, AtomicRequirement
 from .classifier import ExecutorClassifier
 from .rag_client import RAGClient, MockRAGClient
-from .rag_storage import rag_db, Chunk
+from .rag_storage import qdrant_db, Chunk
 from .rag_search import rag_searcher
 
 
@@ -413,8 +413,8 @@ class RequirementsAgent:
                         'tracing': requirement.tracing
                     }
                     
-                    # Используем rag_db для сохранения чанков
-                    chunks = rag_db.save_chunks(
+                    # Используем qdrant_db для сохранения чанков
+                    chunks = qdrant_db.save_chunks(
                         document_id=document_id,
                         text=req_text,
                         metadata=chunk_metadata

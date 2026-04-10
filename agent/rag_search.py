@@ -1,18 +1,18 @@
 """
-Модуль поиска по базе знаний (RAG Search).
+Модуль поиска по базе знаний (RAG Search) с использованием Qdrant.
 Использует векторный поиск для нахождения релевантных контекстов.
 """
 import logging
 from typing import List, Dict, Any, Tuple
-from .rag_storage import VectorDBAdapter, Chunk, rag_db
+from .rag_storage import QdrantVectorDB, Chunk, qdrant_db
 
 logger = logging.getLogger(__name__)
 
 class RAGSearcher:
-    """Класс для выполнения семантического поиска по векторной базе."""
+    """Класс для выполнения семантического поиска по векторной базе Qdrant."""
     
-    def __init__(self, db: VectorDBAdapter = None):
-        self.db = db or rag_db
+    def __init__(self, db: QdrantVectorDB = None):
+        self.db = db or qdrant_db
 
     def search(
         self, 
@@ -22,7 +22,7 @@ class RAGSearcher:
         filters: Dict[str, Any] = None
     ) -> List[Dict[str, Any]]:
         """
-        Выполняет поиск похожих чанков по запросу.
+        Выполняет поиск похожих чанков по запросу через Qdrant.
         
         Args:
             query: Текст запроса пользователя.
@@ -33,53 +33,16 @@ class RAGSearcher:
         Returns:
             Список найденных чанков с оценкой схожести.
         """
-        # Генерируем эмбеддинг для запроса
-        query_embedding = self.db._generate_embedding(query)
+        # Используем встроенный метод search из QdrantVectorDB
+        results = self.db.search(
+            query=query,
+            top_k=top_k,
+            threshold=threshold,
+            filters=filters
+        )
         
-        results = []
-        
-        # В реальной реализации здесь был бы ANN поиск (HNSW, IVF)
-        # Для демо перебираем все чанки и считаем косинусное сходство
-        for chunk_id, chunk_data in self.db._storage.items():
-            # Применение фильтров
-            if filters:
-                match = True
-                for key, value in filters.items():
-                    if chunk_data['metadata'].get(key) != value:
-                        match = False
-                        break
-                if not match:
-                    continue
-            
-            # Расчет схожести (косинусное сходство)
-            stored_embedding = chunk_data['embedding']
-            similarity = self._cosine_similarity(query_embedding, stored_embedding)
-            
-            if similarity >= threshold:
-                result_item = {
-                    "chunk_id": chunk_data['id'],
-                    "content": chunk_data['content'],
-                    "metadata": chunk_data['metadata'],
-                    "similarity_score": round(similarity, 4),
-                    "document_id": chunk_data['metadata'].get('document_id')
-                }
-                results.append(result_item)
-        
-        # Сортировка по убыванию схожести
-        results.sort(key=lambda x: x['similarity_score'], reverse=True)
-        
-        return results[:top_k]
-
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Вычисляет косинусное сходство между двумя векторами."""
-        dot_product = sum(a * b for a, b in zip(vec1, vec2))
-        norm1 = sum(a * a for a in vec1) ** 0.5
-        norm2 = sum(b * b for b in vec2) ** 0.5
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-            
-        return dot_product / (norm1 * norm2)
+        logger.info(f"Найдено {len(results)} результатов для запроса: {query[:50]}...")
+        return results
 
     def find_duplicates(self, text: str, threshold: float = 0.85) -> List[Dict[str, Any]]:
         """Поиск дубликатов или почти дубликатов текста."""
