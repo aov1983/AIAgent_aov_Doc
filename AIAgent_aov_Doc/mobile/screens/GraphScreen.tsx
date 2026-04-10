@@ -1,19 +1,33 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet } from 'react-native';
+import api from '../services/api';
 
-export default function GraphScreen() {
+export default function GraphScreen({ route }: any) {
+  const [graph, setGraph] = useState<any>(null);
+
+  useEffect(() => {
+    // Загрузка графа
+    // api.getGraph(route.params?.docId).then(setGraph);
+  }, []);
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>🕸 Визуализация графа знаний</Text>
-      <Text style={styles.subtext}>Узлы: Главы, Разделы, Абзацы, Чанки</Text>
-      <Text style={styles.subtext}>Связи: Иерархия, Похожесть, Противоречия</Text>
-      {/* Здесь будет интеграция с библиотекой визуализации графов */}
-    </View>
+    <ScrollView style={styles.container}>
+      <Text style={styles.title}>Граф знаний</Text>
+      {graph ? (
+        <View>
+          <Text>Узлов: {graph.nodes.length}</Text>
+          <Text>Связей: {graph.edges.length}</Text>
+          {/* Здесь должна быть визуализация графа */}
+          <Text>Визуализация графа...</Text>
+        </View>
+      ) : (
+        <Text>Загрузка графа...</Text>
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  text: { fontSize: 20, fontWeight: 'bold', marginBottom: 10 },
-  subtext: { fontSize: 14, color: '#666' }
+  container: { flex: 1, padding: 20 },
+  title: { fontSize: 20, fontWeight: 'bold', marginBottom: 20 }
 });
