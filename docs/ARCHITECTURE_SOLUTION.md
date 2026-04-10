@@ -131,30 +131,67 @@ C4Component
 
 ### Схема развертывания (Deployment View)
 
+Инфраструктура развертывается в виде изолированных Docker-контейнеров внутри периметра компании.
+
 ```mermaid
-C4Deployment
-  title Deployment Diagram: AI Architect Agent
+graph TD
+    subgraph UserEnvironment ["Пользовательская среда"]
+        User([👤 Архитектор / DevOps])
+    end
 
-  Deployment_Node(cloud, "Cloud / On-Prem Server", "Linux VM / K8s Cluster") {
-    Deployment_Node(docker, "Docker Host", "Docker Engine") {
-      Container_Boundary(agent_pod, "Agent Pod") {
-        Container(agent_app, "AI Agent App", "Python Docker Image", "Port 8000")
-      }
-      
-      Container_Boundary(qdrant_pod, "Qdrant Pod") {
-        Container(qdrant_app, "Qdrant Server", "qdrant/qdrant:latest", "Port 6333 (REST), 6334 (gRPC)")
-        Volume(qdrant_data, "Qdrant Data Volume", "Persistent Storage", "/qdrant/storage")
-      }
-    }
+    subgraph Infrastructure ["Инфраструктура (Docker / K8s)"]
+        direction TB
+        
+        subgraph AgentService ["AI Agent Service"]
+            App[🐍 Python App<br/>FastAPI :8000]
+        end
+        
+        subgraph QdrantService ["Qdrant Vector DB"]
+            Qdrant[(📦 Qdrant Core<br/>Port 6333/6334)]
+            Volume[(💾 Persistent Volume<br/>qdrant_storage)]
+        end
+        
+        subgraph Storage ["File Storage"]
+            MinIO[(🗄️ MinIO / S3<br/>Port 9000)]
+        end
+    end
     
-    Deployment_Node(storage_node, "Storage Node") {
-      Container(minio, "MinIO / S3", "Object Storage", "Port 9000")
-    }
-  }
+    subgraph External ["Внешние AI сервисы"]
+        OpenAI[🤖 OpenAI API]
+        Anthropic[🤖 Anthropic API]
+        LocalLLM[🏠 Local LLM Server]
+    end
 
-  Rel(agent_app, qdrant_app, "gRPC/REST", "Internal Network")
-  Rel(agent_app, minio, "S3 API", "Internal Network")
+    User -->|HTTPS Upload| App
+    App -->|gRPC/REST Search & Save| Qdrant
+    Qdrant -->|Persist Data| Volume
+    App -->|S3 API Save/Read| MinIO
+    App -->|HTTPS Inference| OpenAI
+    App -->|HTTPS Inference| Anthropic
+    App -->|HTTP/gRPC Secure| LocalLLM
+
+    style User fill:#f9f,stroke:#333,stroke-width:2px
+    style App fill:#bbf,stroke:#333,stroke-width:2px
+    style Qdrant fill:#bfb,stroke:#333,stroke-width:2px
+    style Volume fill:#ddd,stroke:#333,stroke-width:2px
+    style MinIO fill:#ffd,stroke:#333,stroke-width:2px
+    style External fill:#fff,stroke:#999,stroke-dasharray: 5 5
 ```
+
+**Описание компонентов инфраструктуры:**
+
+| Компонент | Тип | Порт | Описание |
+|-----------|-----|------|----------|
+| **AI Agent App** | Container | 8000 | Stateless приложение (Python/FastAPI). Обрабатывает парсинг, декомпозицию, оркестрацию. |
+| **Qdrant Server** | Container | 6333 (REST), 6334 (gRPC) | Векторная база данных. Хранит эмбеддинги и метаданные чанков. |
+| **Qdrant Volume** | Persistent Volume | - | Постоянное хранилище данных Qdrant (`/qdrant/storage`). Сохраняется при перезапуске контейнера. |
+| **MinIO / S3** | Container / Service | 9000 | Объектное хранилище для исходных файлов документов (DOCX, PDF). |
+| **Local LLM** | External/Internal | Зависит от модели | Резервный сервер с локальными моделями (Llama 3) для работы без внешнего доступа. |
+
+**Сетевая архитектура:**
+- Все компоненты работают в изолированной Docker-сети (`agent-network`).
+- Доступ извне только к порту 8000 (Agent API) через反向 прокси (Nginx/Traefik).
+- Qdrant и MinIO не имеют прямого доступа из Internet.
 
 ### Технологический стек
 
