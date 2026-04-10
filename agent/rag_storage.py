@@ -61,21 +61,10 @@ class QdrantVectorDB:
         """
         self.collection_name = collection_name
         self.dimension = dimension
-        self.model = None
+        self._model = None  # Ленивая инициализация
         self.client = None
         
-        # Инициализация модели эмбеддингов
-        if HAS_TRANSFORMERS:
-            try:
-                # Модель поддерживающая русский и английский
-                self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-                logger.info("Модель эмбеддингов загружена успешно.")
-            except Exception as e:
-                logger.warning(f"Не удалось загрузить модель эмбеддингов: {e}. Будет использована заглушка.")
-        else:
-            logger.warning("sentence-transformers не установлен. Эмбеддинги будут фейковыми.")
-        
-        # Инициализация клиента Qdrant
+        # Инициализация клиента Qdrant (без загрузки модели)
         if HAS_QDRANT:
             try:
                 if use_local:
@@ -141,6 +130,22 @@ class QdrantVectorDB:
                 )
         except Exception as e:
             logger.error(f"Ошибка при создании коллекции: {e}")
+
+    @property
+    def model(self):
+        """Ленивая инициализация модели эмбеддингов."""
+        if self._model is None and HAS_TRANSFORMERS:
+            try:
+                # Модель поддерживающая русский и английский
+                self._model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+                logger.info("Модель эмбеддингов загружена успешно.")
+            except Exception as e:
+                logger.warning(f"Не удалось загрузить модель эмбеддингов: {e}. Будет использована заглушка.")
+                self._model = False  # Помечаем что попытка была
+        elif self._model is None:
+            logger.warning("sentence-transformers не установлен. Эмбеддинги будут фейковыми.")
+            self._model = False
+        return self._model if self._model else None
 
     def _generate_embedding(self, text: str) -> List[float]:
         """Генерирует векторное представление текста."""
