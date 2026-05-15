@@ -9,9 +9,75 @@
 """
 
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 import os
+import json
+import logging
+
+logger = logging.getLogger("llm.exchange")
+
+# Прогресс по абзацам: (current_index_1based, total). Выставляется снаружи через set_llm_progress().
+_llm_progress: ContextVar[Optional[Tuple[int, int]]] = ContextVar("_llm_progress", default=None)
+
+
+def set_llm_progress(current: Optional[int], total: Optional[int]) -> None:
+    """Устанавливает прогресс обработки абзацев для логирования LLM-обменов.
+
+    current и total - 1-индексированные. Передайте None, чтобы сбросить."""
+    if current is None or total is None or total <= 0:
+        _llm_progress.set(None)
+    else:
+        _llm_progress.set((current, total))
+
+
+def _truncate(text: str, limit: int) -> str:
+    if limit <= 0 or text is None or len(text) <= limit:
+        return text or ""
+    return text[:limit] + f"... [truncated, total {len(text)} chars]"
+
+
+def _format_progress() -> str:
+    progress = _llm_progress.get()
+    if not progress:
+        return ""
+    current, total = progress
+    current = max(0, min(current, total))
+    percent = (current / total) * 100 if total > 0 else 0.0
+    remaining = max(total - current, 0)
+    return f"\n--- progress ---\n{percent:.1f}% ({current}/{total}), осталось абзацев: {remaining}"
+
+
+def _log_llm_exchange(
+    provider: str,
+    model: str,
+    mode: str,
+    system_prompt: Optional[str],
+    prompt: str,
+    response: Any,
+) -> None:
+    """Логирует пару prompt/response. Уровень INFO. Управляется LLM_LOG_MAX_CHARS (0 = без обрезки)."""
+    try:
+        limit = int(os.getenv("LLM_LOG_MAX_CHARS", "4000"))
+    except ValueError:
+        limit = 4000
+
+    if isinstance(response, (dict, list)):
+        response_text = json.dumps(response, ensure_ascii=False, indent=2)
+    else:
+        response_text = str(response)
+
+    logger.info(
+        "[LLM %s/%s mode=%s]\n--- system ---\n%s\n--- prompt ---\n%s\n--- response ---\n%s\n--- end ---%s",
+        provider,
+        model,
+        mode,
+        _truncate(system_prompt or "", limit),
+        _truncate(prompt, limit),
+        _truncate(response_text, limit),
+        _format_progress(),
+    )
 
 
 class ModelProvider(Enum):
@@ -116,21 +182,21 @@ class OpenAIClient(BaseModelClient):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens
         )
-        return response.choices[0].message.content
-    
+        content = response.choices[0].message.content
+        _log_llm_exchange("openai", self.config.model_name, "generate", system_prompt, prompt, content)
+        return content
+
     def generate_structured(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         system_prompt: Optional[str] = None,
         response_format: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        import json
-        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
+
         response = self.client.chat.completions.create(
             model=self.config.model_name,
             messages=messages,
@@ -138,8 +204,9 @@ class OpenAIClient(BaseModelClient):
             max_tokens=self.config.max_tokens,
             response_format=response_format or {"type": "json_object"}
         )
-        
+
         content = response.choices[0].message.content
+        _log_llm_exchange("openai", self.config.model_name, "structured", system_prompt, prompt, content)
         return json.loads(content)
 
 
@@ -170,16 +237,16 @@ class AnthropicClient(BaseModelClient):
             system=system_prompt or "",
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.content[0].text
-    
+        content = response.content[0].text
+        _log_llm_exchange("anthropic", self.config.model_name, "generate", system_prompt, prompt, content)
+        return content
+
     def generate_structured(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         system_prompt: Optional[str] = None,
         response_format: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        import json
-        
         full_prompt = f"{prompt}\n\nОтветьте в формате JSON."
         response = self.client.messages.create(
             model=self.config.model_name,
@@ -187,8 +254,9 @@ class AnthropicClient(BaseModelClient):
             system=system_prompt or "",
             messages=[{"role": "user", "content": full_prompt}]
         )
-        
+
         content = response.content[0].text
+        _log_llm_exchange("anthropic", self.config.model_name, "structured", system_prompt, full_prompt, content)
         return json.loads(content)
 
 
@@ -213,18 +281,18 @@ class GoogleGeminiClient(BaseModelClient):
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         response = self.client.generate_content(full_prompt)
+        _log_llm_exchange("gemini", self.config.model_name, "generate", system_prompt, prompt, response.text)
         return response.text
-    
+
     def generate_structured(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         system_prompt: Optional[str] = None,
         response_format: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        import json
-        
         full_prompt = f"{system_prompt}\n\n{prompt}\n\nОтветьте в формате JSON." if system_prompt else f"{prompt}\n\nОтветьте в формате JSON."
         response = self.client.generate_content(full_prompt)
+        _log_llm_exchange("gemini", self.config.model_name, "structured", system_prompt, full_prompt, response.text)
         return json.loads(response.text)
 
 
@@ -261,29 +329,30 @@ class LlamaClient(BaseModelClient):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens
         )
-        return response.choices[0].message.content
-    
+        content = response.choices[0].message.content
+        _log_llm_exchange("llama", self.config.model_name, "generate", system_prompt, prompt, content)
+        return content
+
     def generate_structured(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         system_prompt: Optional[str] = None,
         response_format: Optional[Dict] = None
     ) -> Dict[str, Any]:
-        import json
-        
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
+
         response = self.client.chat.completions.create(
             model=self.config.model_name,
             messages=messages,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens
         )
-        
+
         content = response.choices[0].message.content
+        _log_llm_exchange("llama", self.config.model_name, "structured", system_prompt, prompt, content)
         return json.loads(content)
 
 

@@ -20,60 +20,73 @@ import {
   Grid,
   Card,
   CardContent,
+  CircularProgress,
 } from '@mui/material';
 import {
-  FolderOpen as FolderIcon,
   Visibility as ViewIcon,
   Search as SearchIcon,
   Close as CloseIcon,
+  AccountTree as GraphIcon,
 } from '@mui/icons-material';
-import { fileApi, ragApi } from '../api';
-import type { FileHistoryItem, RagSearchResult } from '../types';
+import { documentsApi, graphApi, paragraphsApi, ragApi } from '../api';
+import type { DocumentSummary, GraphData, ParagraphRow, RagSearchResult } from '../types';
 
 export function FileHistoryPage() {
-  const [files, setFiles] = useState<FileHistoryItem[]>([]);
+  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RagSearchResult[]>([]);
-  const [selectedFile, setSelectedFile] = useState<FileHistoryItem | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<DocumentSummary | null>(null);
+  const [graph, setGraph] = useState<GraphData | null>(null);
+  const [paragraphs, setParagraphs] = useState<ParagraphRow[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   useEffect(() => {
-    loadFiles();
+    loadDocuments();
   }, []);
 
-  const loadFiles = async () => {
+  const loadDocuments = async () => {
     try {
-      const data = await fileApi.getHistory();
-      setFiles(data);
+      const data = await documentsApi.list();
+      setDocuments(data);
     } catch (error) {
-      console.error('Failed to load files:', error);
+      console.error('Failed to load documents:', error);
     } finally {
       setLoading(false);
     }
   };
 
+  const openDocument = async (doc: DocumentSummary) => {
+    setSelectedDoc(doc);
+    setGraph(null);
+    setParagraphs([]);
+    setDetailsLoading(true);
+    try {
+      const [graphResp, paragraphsResp] = await Promise.all([
+        graphApi.getByDocument(doc.document_id).catch(() => null),
+        paragraphsApi.getByDocument(doc.document_id).catch(() => [] as ParagraphRow[]),
+      ]);
+      setGraph(graphResp);
+      setParagraphs(paragraphsResp);
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  const closeDocument = () => {
+    setSelectedDoc(null);
+    setGraph(null);
+    setParagraphs([]);
+  };
+
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-
     try {
       const results = await ragApi.search(searchQuery, 0.5);
       setSearchResults(results);
     } catch (error) {
       console.error('Search failed:', error);
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'success';
-      case 'processing':
-        return 'warning';
-      case 'failed':
-        return 'error';
-      default:
-        return 'default';
     }
   };
 
@@ -83,10 +96,21 @@ export function FileHistoryPage() {
     return 'info';
   };
 
+  const downloadGraph = () => {
+    if (!graph || !selectedDoc) return;
+    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `graph_${selectedDoc.document_id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', p: 3 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4">История обработанных файлов</Typography>
+        <Typography variant="h4">История обработанных документов</Typography>
         <Button
           variant="contained"
           color="secondary"
@@ -101,28 +125,40 @@ export function FileHistoryPage() {
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>Имя файла</TableCell>
-              <TableCell>Дата обработки</TableCell>
-              <TableCell>Статус</TableCell>
+              <TableCell>Документ</TableCell>
+              <TableCell>Файл</TableCell>
+              <TableCell>Сохранён</TableCell>
+              <TableCell align="right">Требований</TableCell>
+              <TableCell align="right">Узлов</TableCell>
+              <TableCell align="right">Связей</TableCell>
               <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {files.map((file) => (
-              <TableRow key={file.id}>
-                <TableCell>{file.id}</TableCell>
-                <TableCell>{file.filename}</TableCell>
-                <TableCell>{file.date}</TableCell>
-                <TableCell>
-                  <Chip label={file.status} color={getStatusColor(file.status) as any} size="small" />
+            {loading && (
+              <TableRow>
+                <TableCell colSpan={7} align="center">
+                  <CircularProgress size={24} />
                 </TableCell>
+              </TableRow>
+            )}
+            {!loading && documents.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={7} align="center">
+                  <Typography color="text.secondary">Пока ни одного документа не сохранено</Typography>
+                </TableCell>
+              </TableRow>
+            )}
+            {documents.map((doc) => (
+              <TableRow key={doc.document_id} hover>
+                <TableCell>{doc.title || doc.document_id}</TableCell>
+                <TableCell>{doc.filename}</TableCell>
+                <TableCell>{doc.saved_at.replace('T', ' ')}</TableCell>
+                <TableCell align="right">{doc.total_requirements}</TableCell>
+                <TableCell align="right">{doc.stats.total_nodes}</TableCell>
+                <TableCell align="right">{doc.stats.total_edges}</TableCell>
                 <TableCell align="right">
-                  <IconButton
-                    size="small"
-                    color="primary"
-                    onClick={() => setSelectedFile(file)}
-                  >
+                  <IconButton size="small" color="primary" onClick={() => openDocument(doc)}>
                     <ViewIcon />
                   </IconButton>
                 </TableCell>
@@ -174,7 +210,12 @@ export function FileHistoryPage() {
                           size="small"
                         />
                       </Box>
-                      <Typography variant="body2">{result.content}</Typography>
+                      <Typography variant="body2" sx={{ whiteSpace: 'pre-line' }}>
+                        {result.content
+                          .replace(/\s*Риск:\s*/g, '\n\nРиск: ')
+                          .replace(/\s*Рекомендация:\s*/g, '\n\nРекомендация: ')
+                          .trim()}
+                      </Typography>
                     </CardContent>
                   </Card>
                 </Grid>
@@ -193,44 +234,146 @@ export function FileHistoryPage() {
         </DialogActions>
       </Dialog>
 
-      {/* File Details Dialog */}
-      <Dialog
-        open={!!selectedFile}
-        onClose={() => setSelectedFile(null)}
-        maxWidth="sm"
-        fullWidth
-      >
+      {/* Document Details Dialog with Graph */}
+      <Dialog open={!!selectedDoc} onClose={closeDocument} maxWidth="lg" fullWidth>
         <DialogTitle>
-          Детали файла
+          {selectedDoc?.title || selectedDoc?.document_id}
           <IconButton
             aria-label="close"
-            onClick={() => setSelectedFile(null)}
+            onClick={closeDocument}
             sx={{ position: 'absolute', right: 8, top: 8 }}
           >
             <CloseIcon />
           </IconButton>
         </DialogTitle>
-        <DialogContent>
-          {selectedFile && (
+        <DialogContent dividers>
+          {detailsLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+              <CircularProgress />
+            </Box>
+          )}
+
+          {!detailsLoading && selectedDoc && (
             <Box>
-              <Typography variant="body1" paragraph>
-                <strong>Имя:</strong> {selectedFile.filename}
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                <strong>Файл:</strong> {selectedDoc.filename} &nbsp;·&nbsp;
+                <strong>document_id:</strong> {selectedDoc.document_id} &nbsp;·&nbsp;
+                <strong>Сохранён:</strong> {selectedDoc.saved_at.replace('T', ' ')}
               </Typography>
-              <Typography variant="body1" paragraph>
-                <strong>ID:</strong> {selectedFile.id}
-              </Typography>
-              <Typography variant="body1" paragraph>
-                <strong>Дата:</strong> {selectedFile.date}
-              </Typography>
-              <Typography variant="body1">
-                <strong>Статус:</strong>{' '}
-                <Chip label={selectedFile.status} color={getStatusColor(selectedFile.status) as any} size="small" />
-              </Typography>
+
+              {graph && graph.stats && (
+                <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                    <GraphIcon sx={{ mr: 1, color: 'primary.main' }} />
+                    <Typography variant="h6">Граф знаний</Typography>
+                  </Box>
+                  <Grid container spacing={1} sx={{ mb: 1 }}>
+                    <Grid item><Chip label={`Узлов: ${graph.stats.total_nodes}`} variant="outlined" /></Grid>
+                    <Grid item><Chip label={`Связей: ${graph.stats.total_edges}`} variant="outlined" /></Grid>
+                    <Grid item><Chip label={`Абзацев: ${graph.stats.paragraphs}`} variant="outlined" /></Grid>
+                    <Grid item><Chip label={`Чанков: ${graph.stats.chunks}`} variant="outlined" /></Grid>
+                  </Grid>
+
+                  {graph.edges.filter((e) => e.type === 'similar_to').length > 0 && (
+                    <Box sx={{ mb: 1 }}>
+                      <Typography variant="subtitle2" gutterBottom>
+                        Семантические связи (similar_to)
+                      </Typography>
+                      {graph.edges
+                        .filter((e) => e.type === 'similar_to')
+                        .slice(0, 10)
+                        .map((edge, idx) => (
+                          <Typography key={idx} variant="caption" sx={{ display: 'block' }}>
+                            {edge.source} → {edge.target} (score {edge.weight.toFixed(2)})
+                          </Typography>
+                        ))}
+                    </Box>
+                  )}
+
+                  <Button size="small" variant="outlined" onClick={downloadGraph}>
+                    Скачать граф (JSON)
+                  </Button>
+                </Paper>
+              )}
+
+              {!graph && (
+                <Typography color="text.secondary" sx={{ mb: 2 }}>
+                  Граф для этого документа не найден.
+                </Typography>
+              )}
+
+              {paragraphs.length > 0 && (
+                <Paper variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="h6" sx={{ mb: 1 }}>
+                    Абзацы документа ({paragraphs.length})
+                  </Typography>
+                  <TableContainer sx={{ maxHeight: 420 }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Глава</TableCell>
+                          <TableCell>Раздел</TableCell>
+                          <TableCell>№</TableCell>
+                          <TableCell sx={{ minWidth: 240 }}>Абзац</TableCell>
+                          <TableCell>Факт / Риск / Реком.</TableCell>
+                          <TableCell>Критичность</TableCell>
+                          <TableCell>Исполнители</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {paragraphs.map((row, idx) => (
+                          <TableRow key={idx} hover>
+                            <TableCell>{row.chapter_index}. {row.chapter_title}</TableCell>
+                            <TableCell>{row.section_index}. {row.section_title}</TableCell>
+                            <TableCell>{row.paragraph_index + 1}</TableCell>
+                            <TableCell sx={{ maxWidth: 360 }}>
+                              <Typography variant="body2">
+                                {row.paragraph_text.length > 260
+                                  ? row.paragraph_text.slice(0, 260) + '…'
+                                  : row.paragraph_text}
+                              </Typography>
+                            </TableCell>
+                            <TableCell sx={{ maxWidth: 320 }}>
+                              {row.facts.map((fact, i) => (
+                                <Box key={i} sx={{ mb: 0.5 }}>
+                                  <Typography variant="caption" sx={{ display: 'block' }}>
+                                    <strong>Факт:</strong> {fact}
+                                  </Typography>
+                                  {row.risks[i] && (
+                                    <Typography variant="caption" sx={{ display: 'block' }}>
+                                      <strong>Риск:</strong> {row.risks[i]}
+                                    </Typography>
+                                  )}
+                                  {row.recommendations[i] && (
+                                    <Typography variant="caption" sx={{ display: 'block' }}>
+                                      <strong>Реком.:</strong> {row.recommendations[i]}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              ))}
+                            </TableCell>
+                            <TableCell>
+                              {row.criticality.map((c, i) => (
+                                <Chip key={i} label={c} size="small" sx={{ mr: 0.5, mb: 0.5 }} />
+                              ))}
+                            </TableCell>
+                            <TableCell>
+                              {row.executors.map((e, i) => (
+                                <Chip key={i} label={e} size="small" variant="outlined" sx={{ mr: 0.5, mb: 0.5 }} />
+                              ))}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              )}
             </Box>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSelectedFile(null)}>Закрыть</Button>
+          <Button onClick={closeDocument}>Закрыть</Button>
         </DialogActions>
       </Dialog>
     </Box>

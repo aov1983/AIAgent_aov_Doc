@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link as RouterLink } from 'react-router-dom';
 import {
   Box,
   Drawer,
@@ -30,6 +30,7 @@ import { useAuth } from './hooks/useAuth';
 import { LoginPage } from './pages/LoginPage';
 import { FileUploadPage } from './pages/FileUploadPage';
 import { FileHistoryPage } from './pages/FileHistoryPage';
+import { SearchPage } from './pages/SearchPage';
 
 const DRAWER_WIDTH = 240;
 
@@ -72,7 +73,7 @@ function App() {
       <List>
         {menuItems.map((item) => (
           <ListItem key={item.text} disablePadding>
-            <ListItemButton component="a" href={item.path}>
+            <ListItemButton component={RouterLink} to={item.path} onClick={() => setMobileOpen(false)}>
               <ListItemIcon>{item.icon}</ListItemIcon>
               <ListItemText primary={item.text} />
             </ListItemButton>
@@ -169,7 +170,7 @@ function App() {
           <Routes>
             <Route path="/upload" element={<FileUploadPage userRole={user.role} />} />
             <Route path="/history" element={<FileHistoryPage />} />
-            <Route path="/search" element={<FileHistoryPage />} />
+            <Route path="/search" element={<SearchPage />} />
             <Route path="/" element={<Navigate to="/upload" replace />} />
           </Routes>
         </Box>

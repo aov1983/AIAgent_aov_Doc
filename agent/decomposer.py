@@ -9,7 +9,7 @@
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from .parser import ParsedDocument, DocumentElement
-from .models import BaseModelClient
+from .models import BaseModelClient, set_llm_progress
 
 
 @dataclass
@@ -127,21 +127,48 @@ class Decomposer:
                     sections=[Section(title="Раздел", paragraphs=all_paragraphs)]
                 ))
         
+        # Общее число непустых абзацев для прогресса LLM-логов
+        total_paragraphs = sum(
+            1
+            for chapter in decomposed.chapters
+            for section in chapter.sections
+            for paragraph in section.paragraphs
+            if paragraph.strip()
+        )
+        processed = 0
+
         # Декомпозиция каждого раздела на атомарные требования
-        for chapter in decomposed.chapters:
-            for section in chapter.sections:
-                section.atomic_requirements = self._decompose_section(section, chapter.title)
-        
+        try:
+            for chapter in decomposed.chapters:
+                for section in chapter.sections:
+                    section.atomic_requirements, processed = self._decompose_section(
+                        section, chapter.title, processed, total_paragraphs
+                    )
+        finally:
+            set_llm_progress(None, None)
+
         return decomposed
-    
-    def _decompose_section(self, section: Section, chapter_title: str) -> List[AtomicRequirement]:
-        """Декомпозиция раздела на атомарные требования."""
+
+    def _decompose_section(
+        self,
+        section: Section,
+        chapter_title: str,
+        processed: int,
+        total_paragraphs: int,
+    ) -> tuple:
+        """Декомпозиция раздела на атомарные требования.
+
+        Возвращает (список требований, обновлённый счётчик обработанных абзацев).
+        """
         requirements = []
-        
+
         for para_idx, paragraph in enumerate(section.paragraphs):
             if not paragraph.strip():
                 continue
-            
+
+            processed += 1
+            set_llm_progress(processed, total_paragraphs)
+
             # Используем AI для экстракции атомарных требований
             try:
                 requirement = self._extract_atomic_requirement(
@@ -167,9 +194,9 @@ class Decomposer:
                     },
                     comments=[f"Ошибка обработки: {str(e)}"]
                 ))
-        
-        return requirements
-    
+
+        return requirements, processed
+
     def _extract_atomic_requirement(
         self,
         paragraph: str,

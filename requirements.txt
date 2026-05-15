@@ -23,3 +23,6 @@ python-multipart>=0.0.6
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+
+# Qdrant client
+qdrant-client>=1.7.0

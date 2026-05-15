@@ -1,5 +1,15 @@
 import axios from 'axios';
-import type { Token, LoginRequest, AnalysisResponse, RagSearchResult, FileHistoryItem, Report } from '../types';
+import type {
+  Token,
+  LoginRequest,
+  AnalysisResponse,
+  RagSearchResult,
+  FileHistoryItem,
+  Report,
+  GraphData,
+  ParagraphRow,
+  DocumentSummary,
+} from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -62,6 +72,35 @@ export const ragApi = {
 export const fileApi = {
   getHistory: async (): Promise<FileHistoryItem[]> => {
     const response = await apiClient.get('/api/files/history');
+    return response.data;
+  },
+};
+
+export const graphApi = {
+  get: async (jobId: string): Promise<GraphData> => {
+    const response = await apiClient.get(`/api/graph/${jobId}`);
+    return response.data;
+  },
+  getByDocument: async (documentId: string): Promise<GraphData> => {
+    const response = await apiClient.get(`/api/graph/by-document/${documentId}`);
+    return response.data;
+  },
+};
+
+export const paragraphsApi = {
+  get: async (jobId: string): Promise<ParagraphRow[]> => {
+    const response = await apiClient.get(`/api/paragraphs/${jobId}`);
+    return response.data;
+  },
+  getByDocument: async (documentId: string): Promise<ParagraphRow[]> => {
+    const response = await apiClient.get(`/api/paragraphs/by-document/${documentId}`);
+    return response.data;
+  },
+};
+
+export const documentsApi = {
+  list: async (): Promise<DocumentSummary[]> => {
+    const response = await apiClient.get('/api/documents');
     return response.data;
   },
 };

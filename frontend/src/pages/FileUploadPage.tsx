@@ -13,6 +13,12 @@ import {
   CardContent,
   IconButton,
   Tooltip,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -21,9 +27,11 @@ import {
   Warning as WarningIcon,
   Search as SearchIcon,
   FolderOpen as FolderIcon,
+  AccountTree as GraphIcon,
+  TableChart as TableIcon,
 } from '@mui/icons-material';
-import { uploadApi, ragApi } from '../api';
-import type { AnalysisResponse, RagSearchResult } from '../types';
+import { uploadApi, ragApi, graphApi, paragraphsApi } from '../api';
+import type { AnalysisResponse, RagSearchResult, GraphData, ParagraphRow } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -39,6 +47,8 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
   const [error, setError] = useState('');
   const [similarResults, setSimilarResults] = useState<RagSearchResult[]>([]);
   const [reportContent, setReportContent] = useState('');
+  const [graph, setGraph] = useState<GraphData | null>(null);
+  const [paragraphs, setParagraphs] = useState<ParagraphRow[]>([]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -46,6 +56,8 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
       setError('');
       setResult(null);
       setSimilarResults([]);
+      setGraph(null);
+      setParagraphs([]);
     }
   };
 
@@ -73,6 +85,14 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
       setProgress(100);
       setResult(response);
       setReportContent(response.message);
+
+      // Параллельно подгружаем граф знаний и таблицу абзацев
+      const [graphResp, paragraphsResp] = await Promise.all([
+        graphApi.get(response.job_id).catch(() => null),
+        paragraphsApi.get(response.job_id).catch(() => [] as ParagraphRow[]),
+      ]);
+      setGraph(graphResp);
+      setParagraphs(paragraphsResp);
 
       // Search for similar requirements in RAG
       const searchQuery = file.name.replace(/\.[^/.]+$/, ''); // Remove extension
@@ -190,6 +210,146 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
               </Box>
             )}
           </Paper>
+
+          {/* Собственный граф знаний (не Qdrant) */}
+          {graph && graph.stats && (
+            <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <GraphIcon sx={{ mr: 1, color: 'primary.main' }} />
+                <Typography variant="h6">Граф знаний документа</Typography>
+              </Box>
+
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid item xs={6} sm={3}>
+                  <Chip label={`Узлов: ${graph.stats.total_nodes}`} variant="outlined" />
+                </Grid>
+                <Grid item xs={6} sm={3}>
+                  <Chip label={`Связей: ${graph.stats.total_edges}`} variant="outlined" />
+                </Grid>
+                <Grid item xs={6} sm={3}>
+                  <Chip label={`Абзацев: ${graph.stats.paragraphs}`} variant="outlined" />
+                </Grid>
+                <Grid item xs={6} sm={3}>
+                  <Chip label={`Чанков: ${graph.stats.chunks}`} variant="outlined" />
+                </Grid>
+              </Grid>
+
+              {graph.edges.filter((e) => e.type === 'similar_to').length > 0 && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Семантические связи (similar_to)
+                  </Typography>
+                  {graph.edges
+                    .filter((e) => e.type === 'similar_to')
+                    .slice(0, 10)
+                    .map((edge, idx) => (
+                      <Typography key={idx} variant="caption" sx={{ display: 'block' }}>
+                        {edge.source} → {edge.target} (score {edge.weight.toFixed(2)})
+                      </Typography>
+                    ))}
+                </Box>
+              )}
+
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `graph_${result.job_id}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                Скачать граф (JSON)
+              </Button>
+            </Paper>
+          )}
+
+          {/* Таблица результата LLM с метаданными по абзацам */}
+          {paragraphs.length > 0 && (
+            <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <TableIcon sx={{ mr: 1, color: 'primary.main' }} />
+                <Typography variant="h6">Результат LLM по абзацам</Typography>
+              </Box>
+              <TableContainer sx={{ maxHeight: 520 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Глава</TableCell>
+                      <TableCell>Раздел</TableCell>
+                      <TableCell>№ абзаца</TableCell>
+                      <TableCell sx={{ minWidth: 240 }}>Абзац</TableCell>
+                      <TableCell>Факт / Риск / Рекомендация</TableCell>
+                      <TableCell>Критичность</TableCell>
+                      <TableCell>Исполнители</TableCell>
+                      <TableCell>Похожие (RAG)</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {paragraphs.map((row, idx) => (
+                      <TableRow key={idx} hover>
+                        <TableCell>{row.chapter_index}. {row.chapter_title}</TableCell>
+                        <TableCell>{row.section_index}. {row.section_title}</TableCell>
+                        <TableCell>{row.paragraph_index + 1}</TableCell>
+                        <TableCell sx={{ maxWidth: 360 }}>
+                          <Typography variant="body2">
+                            {row.paragraph_text.length > 260
+                              ? row.paragraph_text.slice(0, 260) + '…'
+                              : row.paragraph_text}
+                          </Typography>
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 360 }}>
+                          {row.facts.map((fact, i) => (
+                            <Box key={i} sx={{ mb: 0.5 }}>
+                              <Typography variant="caption" sx={{ display: 'block' }}>
+                                <strong>Факт:</strong> {fact}
+                              </Typography>
+                              {row.risks[i] && (
+                                <Typography variant="caption" sx={{ display: 'block' }}>
+                                  <strong>Риск:</strong> {row.risks[i]}
+                                </Typography>
+                              )}
+                              {row.recommendations[i] && (
+                                <Typography variant="caption" sx={{ display: 'block' }}>
+                                  <strong>Реком.:</strong> {row.recommendations[i]}
+                                </Typography>
+                              )}
+                            </Box>
+                          ))}
+                          {row.comments.length > 0 && (
+                            <Typography variant="caption" color="warning.main">
+                              {row.comments.join(' | ')}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {row.criticality.map((c, i) => (
+                            <Chip key={i} label={c} size="small" sx={{ mr: 0.5, mb: 0.5 }} />
+                          ))}
+                        </TableCell>
+                        <TableCell>
+                          {row.executors.map((e, i) => (
+                            <Chip key={i} label={e} size="small" variant="outlined" sx={{ mr: 0.5, mb: 0.5 }} />
+                          ))}
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          {row.similar_requirements.slice(0, 3).map((s, i) => (
+                            <Typography key={i} variant="caption" sx={{ display: 'block' }}>
+                              {s.id} ({(s.score * 100).toFixed(0)}%)
+                            </Typography>
+                          ))}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Paper>
+          )}
 
           {/* RAG Similar Results */}
           {similarResults.length > 0 && (

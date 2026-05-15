@@ -61,3 +61,57 @@ export interface Report {
   content: string;
   chunks: ReportChunk[];
 }
+
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: 'chapter' | 'section' | 'paragraph' | 'chunk' | string;
+  content: string;
+  metadata: Record<string, any>;
+  level: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  type: 'contains' | 'similar_to' | 'conflicts_with' | string;
+  weight: number;
+}
+
+export interface GraphStats {
+  total_nodes: number;
+  total_edges: number;
+  paragraphs: number;
+  chunks: number;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  stats?: GraphStats;
+}
+
+export interface DocumentSummary {
+  document_id: string;
+  title: string;
+  filename: string;
+  saved_at: string;
+  total_requirements: number;
+  stats: GraphStats;
+}
+
+export interface ParagraphRow {
+  chapter_index: number;
+  chapter_title: string;
+  section_index: number;
+  section_title: string;
+  paragraph_index: number;
+  paragraph_text: string;
+  facts: string[];
+  risks: string[];
+  criticality: string[];
+  recommendations: string[];
+  executors: string[];
+  similar_requirements: { id: string; score: number; content: string }[];
+  comments: string[];
+}

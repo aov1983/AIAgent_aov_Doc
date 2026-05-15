@@ -219,7 +219,7 @@ class QdrantVectorDB:
             if self.client and HAS_QDRANT:
                 try:
                     point = PointStruct(
-                        id=uuid.UUID(hex=chunk_id[:32]).int,  # Qdrant требует integer ID
+                        id=str(uuid.UUID(hex=chunk_id[:32])),  # Qdrant принимает UUID-строку или uint64
                         vector=embedding,
                         payload={
                             "content": content,
@@ -260,7 +260,7 @@ class QdrantVectorDB:
                 chunk.embedding = self._generate_embedding(chunk.content)
             
             point = PointStruct(
-                id=uuid.UUID(hex=chunk.id[:32]).int,
+                id=str(uuid.UUID(hex=chunk.id[:32])),
                 vector=chunk.embedding,
                 payload={
                     "content": chunk.content,
@@ -301,17 +301,18 @@ class QdrantVectorDB:
                 if conditions:
                     qdrant_filter = Filter(must=conditions)
             
-            # Поиск в Qdrant
+            # Поиск в Qdrant (новый API: query_points вместо deprecated search)
             try:
-                results = self.client.search(
+                response = self.client.query_points(
                     collection_name=self.collection_name,
-                    query_vector=query_embedding,
+                    query=query_embedding,
                     query_filter=qdrant_filter,
                     limit=top_k,
                     score_threshold=threshold,
                     search_params=SearchParams(hnsw_ef=128, exact=False)
                 )
-                
+                results = response.points
+
                 formatted_results = []
                 for result in results:
                     formatted_results.append({
@@ -385,4 +386,4 @@ class QdrantVectorDB:
             logger.info(f"Коллекция '{self.collection_name}' удалена")
 
 # Глобальный экземпляр (Singleton)
-qdrant_db = QdrantVectorDB()
+qdrant_db = QdrantVectorDB(use_local=False, qdrant_url="http://localhost:6333")

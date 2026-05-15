@@ -15,6 +15,9 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .models import ModelConfig, ModelProvider, get_model_client, BaseModelClient
 from .parser import DocumentParser, ParsedDocument
@@ -23,6 +26,7 @@ from .classifier import ExecutorClassifier
 from .rag_client import RAGClient, MockRAGClient
 from .rag_storage import qdrant_db, Chunk
 from .rag_search import rag_searcher
+from .graph_builder import KnowledgeGraphBuilder
 
 
 # Роли пользователей с доступом к агенту (FR-01, NFR-02)
@@ -41,6 +45,8 @@ class ProcessingResult:
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    graph: Dict[str, Any] = field(default_factory=dict)
+    paragraphs: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class RequirementsAgent:
@@ -188,9 +194,13 @@ class RequirementsAgent:
                     saved_to_rag = True
                 except Exception as e:
                     warnings.append(f'Ошибка сохранения в RAG: {str(e)}')
-            
+
+            # Построение собственного графа знаний (FR-08) и таблицы по абзацам
+            graph_data = self._build_graph(decomposed_doc)
+            paragraphs_table = self._build_paragraphs_table(decomposed_doc)
+
             processing_time = (datetime.now() - start_time).total_seconds()
-            
+
             return ProcessingResult(
                 document_id=document_id,
                 title=parsed_doc.title,
@@ -203,9 +213,11 @@ class RequirementsAgent:
                 metadata={
                     'chapters_count': len(decomposed_doc.chapters),
                     'executor_stats': self.classifier.get_statistics(decomposed_doc)
-                }
+                },
+                graph=graph_data,
+                paragraphs=paragraphs_table,
             )
-            
+
         except FileNotFoundError as e:
             errors.append(f'Файл не найден: {str(e)}')
             return ProcessingResult(
@@ -302,9 +314,12 @@ class RequirementsAgent:
                     saved_to_rag = True
                 except Exception as e:
                     warnings.append(f'Ошибка сохранения в RAG: {str(e)}')
-            
+
+            graph_data = self._build_graph(decomposed_doc)
+            paragraphs_table = self._build_paragraphs_table(decomposed_doc)
+
             processing_time = (datetime.now() - start_time).total_seconds()
-            
+
             return ProcessingResult(
                 document_id=document_id,
                 title=title,
@@ -317,9 +332,11 @@ class RequirementsAgent:
                 metadata={
                     'chapters_count': len(decomposed_doc.chapters),
                     'executor_stats': self.classifier.get_statistics(decomposed_doc)
-                }
+                },
+                graph=graph_data,
+                paragraphs=paragraphs_table,
             )
-            
+
         except Exception as e:
             errors.append(f'Ошибка обработки: {str(e)}')
             return ProcessingResult(
@@ -431,9 +448,143 @@ class RequirementsAgent:
                     all_requirements.append(req_data)
         
         self.rag_client.batch_save_requirements(all_requirements, document_id)
-        
+
         return len(all_chunks)
-    
+
+    def _build_graph(self, decomposed_doc: DecomposedDocument) -> Dict[str, Any]:
+        """Сборка собственного графа знаний из декомпозированного документа.
+
+        Узлы: главы / разделы / абзацы / чанки (наследуется от KnowledgeGraphBuilder).
+        Дополнительно проставляется stats и rag-связи 'similar_to' для абзацев,
+        у которых найдены похожие требования.
+        """
+        doc_struct = {
+            'chapters': [
+                {
+                    'title': chapter.title,
+                    'sections': [
+                        {
+                            'title': section.title,
+                            'paragraphs': [
+                                {
+                                    'text': paragraph,
+                                    'atoms': {
+                                        'requirements': [
+                                            req.to_dict()
+                                            for req in section.atomic_requirements
+                                            if req.tracing.get('paragraph_index') == p_idx
+                                        ]
+                                    },
+                                }
+                                for p_idx, paragraph in enumerate(section.paragraphs)
+                            ],
+                        }
+                        for section in chapter.sections
+                    ],
+                }
+                for chapter in decomposed_doc.chapters
+            ]
+        }
+
+        builder = KnowledgeGraphBuilder()
+        graph = builder.build_from_document(doc_struct)
+
+        # similar_to: семантические связи между абзацами текущего документа.
+        # Берём уникальные id абзацев (тот же алгоритм, что и в KnowledgeGraphBuilder),
+        # считаем эмбеддинги и косинус, оставляем пары с score >= threshold.
+        similarity_threshold = 0.65
+        paragraph_items: List[tuple] = []  # (par_id, text)
+        seen_ids: set = set()
+        for chapter in decomposed_doc.chapters:
+            for section in chapter.sections:
+                for par_text in section.paragraphs:
+                    if not par_text or not par_text.strip():
+                        continue
+                    par_id = builder._generate_id(par_text[:50], 'par')
+                    if par_id in seen_ids:
+                        continue
+                    seen_ids.add(par_id)
+                    paragraph_items.append((par_id, par_text))
+
+        intradoc_links: List[Dict[str, Any]] = []
+        if len(paragraph_items) >= 2:
+            try:
+                embeddings = [
+                    qdrant_db._generate_embedding(text) for _, text in paragraph_items
+                ]
+                for i in range(len(paragraph_items)):
+                    for j in range(i + 1, len(paragraph_items)):
+                        score = qdrant_db._cosine_similarity(embeddings[i], embeddings[j])
+                        if score >= similarity_threshold and score < 0.999:
+                            intradoc_links.append({
+                                'source': paragraph_items[i][0],
+                                'target': paragraph_items[j][0],
+                                'score': float(score),
+                            })
+            except Exception as e:
+                logger.warning(f"Не удалось построить similar_to между абзацами: {e}")
+
+        if intradoc_links:
+            builder.add_rag_links(intradoc_links)
+            graph = builder.to_json()
+
+        # Статистика для GUI
+        nodes = graph.get('nodes', [])
+        edges = graph.get('edges', [])
+        graph['stats'] = {
+            'total_nodes': len(nodes),
+            'total_edges': len(edges),
+            'paragraphs': sum(1 for n in nodes if n.get('type') == 'paragraph'),
+            'chunks': sum(1 for n in nodes if n.get('type') == 'chunk'),
+        }
+        return graph
+
+    def _build_paragraphs_table(self, decomposed_doc: DecomposedDocument) -> List[Dict[str, Any]]:
+        """Сводная таблица результата LLM с метаданными по каждому абзацу.
+
+        Строка таблицы = абзац + агрегированные данные атомарных требований
+        (факт/риск/критичность/рекомендация/исполнители/похожие из RAG).
+        """
+        rows: List[Dict[str, Any]] = []
+        for c_idx, chapter in enumerate(decomposed_doc.chapters, 1):
+            for s_idx, section in enumerate(chapter.sections, 1):
+                for p_idx, paragraph_text in enumerate(section.paragraphs):
+                    reqs = [
+                        req for req in section.atomic_requirements
+                        if req.tracing.get('paragraph_index') == p_idx
+                    ]
+                    rows.append({
+                        'chapter_index': c_idx,
+                        'chapter_title': chapter.title,
+                        'section_index': s_idx,
+                        'section_title': section.title,
+                        'paragraph_index': p_idx,
+                        'paragraph_text': paragraph_text,
+                        'facts': [r.fact for r in reqs],
+                        'risks': [r.risk for r in reqs],
+                        'criticality': [r.criticality for r in reqs],
+                        'recommendations': [r.recommendation for r in reqs],
+                        'executors': sorted({e for r in reqs for e in r.executors}),
+                        'similar_requirements': [
+                            {
+                                'id': s.get('id'),
+                                'score': s.get('similarity_score'),
+                                'content': s.get('content', '')[:200],
+                            }
+                            for r in reqs for s in r.similar_requirements[:3]
+                        ],
+                        'comments': [
+                            c
+                            for r in reqs
+                            for c in (
+                                r.comments
+                                if isinstance(r.comments, list)
+                                else ([r.comments] if r.comments else [])
+                            )
+                        ],
+                    })
+        return rows
+
     def _generate_report(self, decomposed_doc: DecomposedDocument) -> str:
         """
         Генерация отчёта в формате Markdown (FR-07).
@@ -510,7 +661,16 @@ class RequirementsAgent:
         Returns:
             List[Dict]: Результаты поиска
         """
-        return self.rag_client.search_similar(query, limit=limit)
+        results = rag_searcher.search(query=query, top_k=limit, threshold=0.0)
+        return [
+            {
+                "id": r["chunk_id"],
+                "content": r["content"],
+                "similarity_score": r["similarity_score"],
+                "metadata": r["metadata"],
+            }
+            for r in results
+        ]
     
     def get_rag_statistics(self) -> Dict[str, Any]:
         """Получение статистики по базе знаний RAG."""
