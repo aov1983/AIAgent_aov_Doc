@@ -26,10 +26,10 @@ import {
   Visibility as ViewIcon,
   Search as SearchIcon,
   Close as CloseIcon,
-  AccountTree as GraphIcon,
 } from '@mui/icons-material';
 import { documentsApi, graphApi, paragraphsApi, ragApi } from '../api';
 import type { DocumentSummary, GraphData, ParagraphRow, RagSearchResult } from '../types';
+import { GraphCard } from '../components/GraphCard';
 
 export function FileHistoryPage() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
@@ -94,17 +94,6 @@ export function FileHistoryPage() {
     if (score >= 0.8) return 'error';
     if (score >= 0.6) return 'warning';
     return 'info';
-  };
-
-  const downloadGraph = () => {
-    if (!graph || !selectedDoc) return;
-    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `graph_${selectedDoc.document_id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   return (
@@ -261,39 +250,16 @@ export function FileHistoryPage() {
                 <strong>Сохранён:</strong> {selectedDoc.saved_at.replace('T', ' ')}
               </Typography>
 
-              {graph && graph.stats && (
-                <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                    <GraphIcon sx={{ mr: 1, color: 'primary.main' }} />
-                    <Typography variant="h6">Граф знаний</Typography>
-                  </Box>
-                  <Grid container spacing={1} sx={{ mb: 1 }}>
-                    <Grid item><Chip label={`Узлов: ${graph.stats.total_nodes}`} variant="outlined" /></Grid>
-                    <Grid item><Chip label={`Связей: ${graph.stats.total_edges}`} variant="outlined" /></Grid>
-                    <Grid item><Chip label={`Абзацев: ${graph.stats.paragraphs}`} variant="outlined" /></Grid>
-                    <Grid item><Chip label={`Чанков: ${graph.stats.chunks}`} variant="outlined" /></Grid>
-                  </Grid>
-
-                  {graph.edges.filter((e) => e.type === 'similar_to').length > 0 && (
-                    <Box sx={{ mb: 1 }}>
-                      <Typography variant="subtitle2" gutterBottom>
-                        Семантические связи (similar_to)
-                      </Typography>
-                      {graph.edges
-                        .filter((e) => e.type === 'similar_to')
-                        .slice(0, 10)
-                        .map((edge, idx) => (
-                          <Typography key={idx} variant="caption" sx={{ display: 'block' }}>
-                            {edge.source} → {edge.target} (score {edge.weight.toFixed(2)})
-                          </Typography>
-                        ))}
-                    </Box>
-                  )}
-
-                  <Button size="small" variant="outlined" onClick={downloadGraph}>
-                    Скачать граф (JSON)
-                  </Button>
-                </Paper>
+              {graph && selectedDoc && (
+                <GraphCard
+                  graph={graph}
+                  downloadName={`graph_${selectedDoc.document_id}.json`}
+                  title="Граф знаний"
+                  height={520}
+                  paperVariant="outlined"
+                  paperPadding={2}
+                  resetKey={selectedDoc.document_id}
+                />
               )}
 
               {!graph && (

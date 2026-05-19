@@ -27,13 +27,13 @@ import {
   Warning as WarningIcon,
   Search as SearchIcon,
   FolderOpen as FolderIcon,
-  AccountTree as GraphIcon,
   TableChart as TableIcon,
 } from '@mui/icons-material';
 import { uploadApi, graphApi, paragraphsApi } from '../api';
 import type { AnalysisResponse, RagSearchResult, GraphData, ParagraphRow } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { GraphCard } from '../components/GraphCard';
 
 interface FileUploadPageProps {
   userRole: string;
@@ -235,60 +235,13 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
           </Paper>
 
           {/* Собственный граф знаний (не Qdrant) */}
-          {graph && graph.stats && (
-            <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                <GraphIcon sx={{ mr: 1, color: 'primary.main' }} />
-                <Typography variant="h6">Граф знаний документа</Typography>
-              </Box>
-
-              <Grid container spacing={2} sx={{ mb: 2 }}>
-                <Grid item xs={6} sm={3}>
-                  <Chip label={`Узлов: ${graph.stats.total_nodes}`} variant="outlined" />
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Chip label={`Связей: ${graph.stats.total_edges}`} variant="outlined" />
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Chip label={`Абзацев: ${graph.stats.paragraphs}`} variant="outlined" />
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Chip label={`Чанков: ${graph.stats.chunks}`} variant="outlined" />
-                </Grid>
-              </Grid>
-
-              {graph.edges.filter((e) => e.type === 'similar_to').length > 0 && (
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Семантические связи (similar_to)
-                  </Typography>
-                  {graph.edges
-                    .filter((e) => e.type === 'similar_to')
-                    .slice(0, 10)
-                    .map((edge, idx) => (
-                      <Typography key={idx} variant="caption" sx={{ display: 'block' }}>
-                        {edge.source} → {edge.target} (score {edge.weight.toFixed(2)})
-                      </Typography>
-                    ))}
-                </Box>
-              )}
-
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => {
-                  const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `graph_${result.job_id}.json`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-              >
-                Скачать граф (JSON)
-              </Button>
-            </Paper>
+          {graph && (
+            <GraphCard
+              graph={graph}
+              downloadName={`graph_${result.job_id}.json`}
+              height={560}
+              resetKey={result.job_id}
+            />
           )}
 
           {/* Таблица результата LLM с метаданными по абзацам */}
