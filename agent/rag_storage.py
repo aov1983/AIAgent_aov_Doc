@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 import logging
 import uuid
+import os
 
 # Интеграция с Qdrant
 try:
@@ -386,4 +387,8 @@ class QdrantVectorDB:
             logger.info(f"Коллекция '{self.collection_name}' удалена")
 
 # Глобальный экземпляр (Singleton)
-qdrant_db = QdrantVectorDB(use_local=False, qdrant_url="http://localhost:6333")
+qdrant_db = QdrantVectorDB(
+  use_local=False,
+  qdrant_url=f"http://{os.getenv('QDRANT_HOST','localhost')}:{os.getenv('QDRANT_PORT','6333')}",
+  collection_name=os.getenv("QDRANT_COLLECTION_NAME", "architect_knowledge"),
+)

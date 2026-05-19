@@ -378,11 +378,15 @@ class RequirementsAgent:
                     comments = []
                     
                     for res in similar_results:
+                        meta = res.get('metadata', {}) or {}
                         similar_items.append({
                             'id': res['chunk_id'],
                             'similarity_score': res['similarity_score'],
                             'content': res['content'],
-                            'document_id': res.get('document_id', 'unknown')
+                            'document_id': res.get('document_id', 'unknown'),
+                            'source_document': meta.get('chapter_title')
+                                               or meta.get('document_id')
+                                               or 'unknown',
                         })
                     
                     # Добавление информации о дубликатах в комментарии
@@ -570,6 +574,8 @@ class RequirementsAgent:
                                 'id': s.get('id'),
                                 'score': s.get('similarity_score'),
                                 'content': s.get('content', '')[:200],
+                                'document_id': s.get('document_id'),
+                                'source_document': s.get('source_document'),
                             }
                             for r in reqs for s in r.similar_requirements[:3]
                         ],

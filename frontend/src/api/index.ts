@@ -61,9 +61,17 @@ export const reportApi = {
 };
 
 export const ragApi = {
-  search: async (query: string, threshold: number = 0.5): Promise<RagSearchResult[]> => {
+  search: async (
+    query: string,
+    threshold: number = 0.5,
+    excludeDocumentId?: string,
+  ): Promise<RagSearchResult[]> => {
     const response = await apiClient.get('/api/rag/search', {
-      params: { query, threshold },
+      params: {
+        query,
+        threshold,
+        ...(excludeDocumentId ? { exclude_document_id: excludeDocumentId } : {}),
+      },
     });
     return response.data;
   },

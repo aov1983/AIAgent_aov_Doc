@@ -160,6 +160,7 @@ class AnalysisResponse(BaseModel):
     status: str
     message: str
     report_url: Optional[str] = None
+    document_id: Optional[str] = None
 
 class RagSearchResult(BaseModel):
     chunk_id: str
@@ -248,7 +249,8 @@ async def upload_document(
             job_id=job_id,
             status="completed" if not result.errors else "failed",
             message=result.report[:500] if result.report else "Document analyzed successfully",
-            report_url=f"/api/reports/{job_id}"
+            report_url=f"/api/reports/{job_id}",
+            document_id=result.document_id,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -341,6 +343,7 @@ async def get_paragraphs_by_document(document_id: str, current_user: dict = Depe
 async def search_rag(
     query: str,
     threshold: float = 0.5,
+    exclude_document_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
     """Search for similar requirements in RAG"""
@@ -357,6 +360,10 @@ async def search_rag(
             }
             for r in results
             if r.get("similarity_score", 0.0) >= threshold
+            and (
+                not exclude_document_id
+                or r.get("metadata", {}).get("document_id") != exclude_document_id
+            )
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -30,7 +30,7 @@ import {
   AccountTree as GraphIcon,
   TableChart as TableIcon,
 } from '@mui/icons-material';
-import { uploadApi, ragApi, graphApi, paragraphsApi } from '../api';
+import { uploadApi, graphApi, paragraphsApi } from '../api';
 import type { AnalysisResponse, RagSearchResult, GraphData, ParagraphRow } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -95,9 +95,32 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
       setParagraphs(paragraphsResp);
 
       // Search for similar requirements in RAG
-      const searchQuery = file.name.replace(/\.[^/.]+$/, ''); // Remove extension
-      const similar = await ragApi.search(searchQuery, 0.5);
-      setSimilarResults(similar);
+      const currentDocId = response.document_id;
+      const dedup = new Map<string, RagSearchResult>();
+      for (const row of paragraphsResp) {
+        for (const sim of row.similar_requirements ?? []) {
+          if (sim.document_id && currentDocId && sim.document_id === currentDocId) {
+            continue;
+          }
+          const prev = dedup.get(sim.id);
+          if (!prev || sim.score > prev.similarity_score) {
+            dedup.set(sim.id, {
+              chunk_id: sim.id,
+              content: sim.content,
+              similarity_score: sim.score,
+              source_document: sim.source_document || sim.document_id || 'unknown',
+              metadata: {
+                matched_in_section: row.section_title,
+                matched_paragraph_index: row.paragraph_index,
+                ...(sim.document_id ? { source_document_id: sim.document_id } : {}),
+              },
+            });
+          }
+        }
+      }
+      setSimilarResults(
+        Array.from(dedup.values()).sort((a, b) => b.similarity_score - a.similarity_score),
+      );
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Ошибка загрузки файла');
     } finally {

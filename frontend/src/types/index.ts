@@ -20,6 +20,7 @@ export interface AnalysisResponse {
   status: string;
   message: string;
   report_url?: string;
+  document_id?: string;
 }
 
 export interface RagSearchResult {
@@ -112,6 +113,12 @@ export interface ParagraphRow {
   criticality: string[];
   recommendations: string[];
   executors: string[];
-  similar_requirements: { id: string; score: number; content: string }[];
+  similar_requirements: {
+    id: string;
+    score: number;
+    content: string;
+    document_id?: string;
+    source_document?: string;
+  }[];
   comments: string[];
 }
