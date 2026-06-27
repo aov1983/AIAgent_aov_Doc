@@ -1,0 +1,634 @@
+{
+  "id": "wf-api-architecture",
+  "name": "wf_api_architecture",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "projects/architecture",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[archGet]-webhook",
+      "name": "[archGet] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1500,
+        0
+      ],
+      "webhookId": "docs-arch-get"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[archGet]-auth",
+      "name": "[archGet] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[archGet]-if",
+      "name": "[archGet] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1020,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "project_architecture"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "condition": "eq",
+              "keyValue": "={{ ($('[archGet] Webhook').first().json.query || {}).project_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "[archGet]-Get-Saved",
+      "name": "[archGet] Get Saved",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -780,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map((i) => i.json).filter((r) => r && r.project_id);\n  const q = ($('[archGet] Webhook').first().json.query) || {};\n  const pid = q.project_id ? String(q.project_id) : '';\n  const row = rows.find((r) => r.project_id === pid) || (pid ? null : rows[0]);\n  if (!row || !row.project_id) {\n    return [{ json: { _http_code: 200, _body: { status: 'none', project_id: pid } } }];\n  }\n  return [\n    {\n      json: {\n        _http_code: 200,\n        _body: {\n          project_id: row.project_id,\n          status: row.status || 'ready',\n          generated_at: (row.generated_at || '').toString(),\n          provider: row.provider || '',\n          model: row.model || '',\n          sources_count: Number(row.sources_count) || 0,\n          summary_md: row.summary_md || '',\n          c4_context: row.c4_context || '',\n          c4_container: row.c4_container || '',\n        },\n      },\n    },\n  ];"
+      },
+      "id": "[archGet]-Build-Response",
+      "name": "[archGet] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[archGet]-respond",
+      "name": "[archGet] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "projects/architecture/generate",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[gen]-webhook",
+      "name": "[gen] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1500,
+        400
+      ],
+      "webhookId": "docs-arch-generate"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[gen]-auth",
+      "name": "[gen] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1260,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[gen]-if",
+      "name": "[gen] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1020,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const hook = $('[gen] Webhook').first().json || {};\n  const body = hook.body && typeof hook.body === 'object' ? hook.body : hook;\n  const project_id = body.project_id ? String(body.project_id) : '';\n  return [{ json: { _http_code: 200, project_id } }];"
+      },
+      "id": "[gen]-Parse-Request",
+      "name": "[gen] Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -780,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "condition": "eq",
+              "keyValue": "={{ $('[gen] Parse Request').first().json.project_id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "[gen]-Get-Docs",
+      "name": "[gen] Get Docs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -540,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "config"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "key",
+              "condition": "eq",
+              "keyValue": "llm_extraction"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "[gen]-Get-LLM-Config",
+      "name": "[gen] Get LLM Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('[gen] Get Docs').all().map((i) => i.json).filter((r) => r && r.document_id);\n  const okDoc = (s) => !s || ['completed', 'partial', 'ready', 'processing'].includes(String(s));\n  const docIds = docs.filter((d) => okDoc(d.status)).map((d) => String(d.document_id));\n  if (!docIds.length) return []; // нет годных документов → wf_rag не зовём; Generate отдаст заглушку\n  const query =\n    'архитектура системы; технологический стек и платформы; программные компоненты, модули и сервисы; ' +\n    'хранение данных и базы данных; интеграции, API и внешние системы; роли доступа и безопасность; ' +\n    'развёртывание и инфраструктура; нефункциональные требования, производительность, отказоустойчивость';\n  return [{ json: { query, topK: 40, includeDocumentIds: docIds } }];"
+      },
+      "id": "[gen]-Build-RAG-Request",
+      "name": "[gen] Build RAG Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "[gen]-RAG-Search-(sub)",
+      "name": "[gen] RAG Search (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        180,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const http = this.helpers.httpRequest.bind(this.helpers);\n  const nowIso = new Date().toISOString();\n\n  const docs = $('[gen] Get Docs').all().map((i) => i.json).filter((r) => r && r.document_id);\n  const projectId = $('[gen] Parse Request').first().json.project_id || '';\n\n  // RAG-контекст — из wf_rag (нода [gen] RAG Search (sub)), а НЕ прямым обращением к Qdrant.\n  // wf_rag backend-aware и сам фильтрует по includeDocumentIds (запрос формирует [gen] Build RAG\n  // Request). hits: [{ score, payload: {...metadata, content} }].\n  const hits = [];\n  for (const it of $('[gen] RAG Search (sub)').all()) {\n    const j = it.json || {};\n    if (Array.isArray(j.hits)) hits.push(...j.hits);\n  }\n\n  // Нет документов/контекста — сохраняем заглушку, LLM не зовём.\n  if (!docs.length || !hits.length) {\n    const msg = !docs.length\n      ? 'В проекте нет обработанных документов. Добавьте и обработайте документы, затем сгенерируйте архитектуру.'\n      : 'Не удалось собрать контекст из документов проекта (RAG вернул пусто).';\n    return [\n      {\n        json: {\n          _http_code: 200,\n          _gen: {\n            project_id: projectId,\n            status: 'empty',\n            generated_at: nowIso,\n            provider: '',\n            model: '',\n            sources_count: 0,\n            summary_md: '> ' + msg,\n            c4_context: '',\n            c4_container: '',\n            raw_json: '',\n          },\n        },\n      },\n    ];\n  }\n\n  // Контекст из RAG-хитов и список документов проекта.\n  const ctxText = hits\n    .map((h, i) => {\n      const pl = h.payload || {};\n      const head = pl.chapter_title || pl.section_title || pl.document_title || '';\n      return '[' + (i + 1) + '] ' + (head ? head + ': ' : '') + String(pl.content || '').trim();\n    })\n    .join('\\n');\n  const docList = docs.map((d) => '- ' + (d.title || d.filename || d.document_id)).join('\\n');\n\n  // --- выбор LLM-провайдера: один-в-один с [upload] Merge Chunks ---\n  // Провайдер/модель/base_url/ключ — из строки config(llm_extraction), читаем нодой\n  // [gen] Get LLM Config (dataTable), БЕЗ self-HTTP к /webhook/llm-config: на «чужих» стендах\n  // task-runner — отдельный контейнер, сеть до n8n (localhost:5678) не доходит, а dataTable\n  // читается нативно. Ключ — из колонки api_key той же строки (как в [upload] Merge Chunks), без $env.\n  const OLLAMA = 'http://host.docker.internal:11434/api/generate';\n  const MODEL = 'qwen3:8b';\n  let DEVELONICA_URL = 'https://ai.develonica.group'.replace(/\\/+$/, '') + '/api/v1/chat/completions';\n  let LMSTUDIO_URL = 'http://192.168.2.135:1234/v1'.replace(/\\/+$/, '') + '/chat/completions';\n  let API_KEY = '';\n  let PROVIDER = 'ollama',\n    CLAUDE_MODEL = 'claude-haiku-4-5',\n    DEVELONICA_MODEL = 'dvl-analyst',\n    LMSTUDIO_MODEL = 'google/gemma-4-12b';\n  {\n    const _c = $('[gen] Get LLM Config').first();\n    const lc = (_c && _c.json) || {};\n    const _p = String(lc.provider || '').toLowerCase();\n    API_KEY = lc.api_key ? String(lc.api_key) : '';\n    if (_p === 'claude') {\n      PROVIDER = 'claude';\n      if (lc.model) CLAUDE_MODEL = String(lc.model);\n    } else if (_p === 'develonica') {\n      PROVIDER = 'develonica';\n      if (lc.model) DEVELONICA_MODEL = String(lc.model);\n      if (lc.base_url) DEVELONICA_URL = String(lc.base_url).replace(/\\/+$/, '') + '/api/v1/chat/completions';\n    } else if (_p === 'lmstudio') {\n      PROVIDER = 'lmstudio';\n      if (lc.model) LMSTUDIO_MODEL = String(lc.model);\n      if (lc.base_url) LMSTUDIO_URL = String(lc.base_url).replace(/\\/+$/, '') + '/chat/completions';\n    }\n  }\n\n  const stripJson = (s) => {\n    let t = String(s || '').trim();\n    const m = t.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n    if (m) t = m[1].trim();\n    const a = t.indexOf('{'),\n      b = t.lastIndexOf('}');\n    return a >= 0 && b > a ? t.slice(a, b + 1) : t;\n  };\n  const _sleep = (ms) => new Promise((res) => setTimeout(res, ms));\n  const _httpStatus = (e) => {\n    const s =\n      e &&\n      (e.httpCode ||\n        e.statusCode ||\n        (e.response && (e.response.status || e.response.statusCode)) ||\n        (e.cause && e.cause.statusCode));\n    if (s) return Number(s);\n    const m = String((e && e.message) || '').match(/\\b(429|529|500|502|503|504)\\b/);\n    return m ? Number(m[1]) : 0;\n  };\n  const _withRetry = async (fn) => {\n    const MAX = 4;\n    let delay = 2000;\n    for (let attempt = 0; ; attempt++) {\n      try {\n        return await fn();\n      } catch (e) {\n        const st = _httpStatus(e);\n        const retriable =\n          st === 429 ||\n          st === 529 ||\n          st === 500 ||\n          st === 502 ||\n          st === 503 ||\n          st === 504 ||\n          (st === 0 &&\n            /timeout|socket|network|ECONN|EAI_AGAIN|ETIMEDOUT|aborted/i.test(\n              String((e && e.message) || ''),\n            ));\n        if (attempt >= MAX || !retriable) throw e;\n        await _sleep(Math.min(delay, 30000) + Math.floor(Math.random() * 500));\n        delay *= 2;\n      }\n    }\n  };\n  // LM Studio: strict json_schema (GBNF) для structured output НЕ используем — на reasoning-моделях\n  // (gpt-oss) он зависает (>150с → таймаут), на gemma-qat вызывает дегенерацию строк. Структуру\n  // задаём в промпте. reasoning серверно не гасим (qwen3-PayGate давится reasoning_effort/\n  // enable_thinking → пустой content); вместо этого ПЕРЕЖИДАЕМ его большим max_tokens. stripJson\n  // снимает ```-заборы (reasoning приходит в отдельном reasoning_content, content остаётся чистым).\n  const callLLM = async (prompt, maxTok) => {\n    const _mt = maxTok || 4096;\n    if (PROVIDER === 'claude') {\n      const r = await _withRetry(() =>\n        http({\n          method: 'POST',\n          url: 'https://api.anthropic.com/v1/messages',\n          json: true,\n          timeout: 180000,\n          headers: {\n            'x-api-key': (API_KEY || '').trim(),\n            'anthropic-version': '2023-06-01',\n            'content-type': 'application/json',\n          },\n          body: {\n            model: CLAUDE_MODEL,\n            max_tokens: _mt,\n            temperature: 0.2,\n            messages: [{ role: 'user', content: prompt }],\n          },\n        }),\n      );\n      return stripJson((r && r.content && r.content[0] && r.content[0].text) || '');\n    }\n    if (PROVIDER === 'develonica') {\n      const r = await _withRetry(() =>\n        http({\n          method: 'POST',\n          url: DEVELONICA_URL,\n          json: true,\n          timeout: 180000,\n          headers: {\n            Authorization: 'Bearer ' + (API_KEY || '').trim(),\n            'content-type': 'application/json',\n          },\n          body: {\n            model: DEVELONICA_MODEL,\n            max_tokens: _mt,\n            temperature: 0.2,\n            stream: false,\n            messages: [{ role: 'user', content: prompt }],\n          },\n        }),\n      );\n      return stripJson(\n        (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) ||\n          '',\n      );\n    }\n    if (PROVIDER === 'lmstudio') {\n      const _body = {\n        model: LMSTUDIO_MODEL,\n        max_tokens: _mt,\n        temperature: 0.3,\n        stream: false,\n        // qwen3 на PayGate ДАВИТСЯ gpt-oss-параметрами (reasoning_effort/enable_thinking/\n        // chat_template_kwargs) — сервер отдаёт ПУСТОЙ content → status:error (замер\n        // probe_lmstudio_qwen3_arch.sh). thinking серверно не выключить, поэтому ПЕРЕЖИДАЕМ его\n        // большим max_tokens: модель тратит ~6-7k ток (reasoning в отдельном reasoning_content) и\n        // сама останавливается (finish:stop), потолок не доедает. /no_think чуть сокращает reasoning.\n        messages: [{ role: 'user', content: prompt + '\\n/no_think' }],\n      };\n      const r = await _withRetry(() =>\n        http({\n          method: 'POST',\n          url: LMSTUDIO_URL,\n          json: true,\n          timeout: 300000,\n          headers: {\n            Authorization: 'Bearer ' + (API_KEY || 'lm-studio').trim(),\n            'content-type': 'application/json',\n          },\n          body: _body,\n        }),\n      );\n      return stripJson(\n        (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) ||\n          '',\n      );\n    }\n    const r = await _withRetry(() =>\n      http({\n        method: 'POST',\n        url: OLLAMA,\n        json: true,\n        timeout: 300000,\n        body: {\n          model: MODEL,\n          prompt,\n          stream: false,\n          format: 'json',\n          options: { temperature: 0.2, num_ctx: 16384, num_predict: _mt },\n        },\n      }),\n    );\n    return r && r.response ? r.response : '';\n  };\n\n  const PROMPT =\n    'Ты — системный архитектор. На основе фрагментов из требований ВЫВЕДИ архитектуру целевой ' +\n    'программной системы, которую эти требования описывают (это аргументированное ПРЕДЛОЖЕНИЕ ' +\n    'архитектуры, а не пересказ текста). Верни СТРОГО ОДИН JSON-объект по схеме (без markdown, без ```):\\n' +\n    '{\\n' +\n    '  \"system_name\": \"краткое имя целевой системы\",\\n' +\n    '  \"overview\": \"2-4 предложения: назначение и суть системы\",\\n' +\n    '  \"stack\": [{\"name\": \"технология/платформа\", \"purpose\": \"зачем в этой системе\"}],\\n' +\n    '  \"decisions\": [{\"title\": \"архитектурное решение\", \"rationale\": \"обоснование из требований\"}],\\n' +\n    '  \"context\": {\\n' +\n    '    \"persons\": [{\"id\": \"лат_ид\", \"name\": \"роль/пользователь\", \"descr\": \"кратко\"}],\\n' +\n    '    \"external_systems\": [{\"id\": \"лат_ид\", \"name\": \"внешняя система\", \"descr\": \"кратко\"}],\\n' +\n    '    \"relations\": [{\"from\": \"ид\", \"to\": \"ид\", \"label\": \"что делает\"}]\\n' +\n    '  },\\n' +\n    '  \"containers\": {\\n' +\n    '    \"items\": [{\"id\": \"лат_ид\", \"name\": \"контейнер\", \"tech\": \"технология\", \"descr\": \"кратко\", \"kind\": \"app|db|queue|ext\"}],\\n' +\n    '    \"relations\": [{\"from\": \"ид\", \"to\": \"ид\", \"label\": \"что делает\", \"tech\": \"протокол/формат\"}]\\n' +\n    '  }\\n' +\n    '}\\n' +\n    'Правила: (1) Сама целевая система в context имеет фиксированный id \"system\" — НЕ описывай её в массивах, ' +\n    'используй \"system\" в relations как ид. (2) id — только латиница/цифры/подчёркивание, без пробелов, уникальные. ' +\n    '(3) relations.from/to ссылаются на id персон, внешних систем, контейнеров или \"system\". ' +\n    '(4) Всё по-русски; строки короткие, без переносов строк. (5) Опирайся на требования; где данных мало — ' +\n    'выдвини разумные типовые предположения и отметь это в rationale. (6) 3-8 контейнеров, не плоди лишнего.\\n\\n' +\n    'Документы проекта:\\n' +\n    docList +\n    '\\n\\nФрагменты требований (RAG):\\n' +\n    ctxText +\n    '\\n\\nJSON:';\n\n  let parsed = {};\n  try {\n    // 16384: qwen3-thinking (lmstudio/PayGate) тратит ~6-7k ток на reasoning+JSON и сам тормозит\n    // (finish:stop) — запас, чтобы JSON не обрезался по бюджету. Прочие провайдеры потолок не доедают.\n    parsed = JSON.parse(stripJson(await callLLM(PROMPT, 16384)));\n  } catch (e) {\n    parsed = {};\n  }\n\n  // --- детерминированная сборка summary_md + C4 DSL (надёжнее, чем сырой mermaid от LLM) ---\n  const esc = (s) =>\n    String(s == null ? '' : s)\n      .replace(/\"/g, \"'\")\n      .replace(/\\s+/g, ' ')\n      .trim();\n  const alias = (s, fb) => {\n    let a = String(s == null ? '' : s)\n      .replace(/[^A-Za-z0-9_]/g, '_')\n      .replace(/_+/g, '_')\n      .replace(/^_|_$/g, '');\n    if (!a) a = fb;\n    if (/^[0-9]/.test(a)) a = 'n' + a;\n    return a;\n  };\n\n  const sysName = esc(parsed.system_name) || 'Целевая система';\n  const overview = String(parsed.overview || '').trim();\n  const stack = Array.isArray(parsed.stack) ? parsed.stack : [];\n  const decisions = Array.isArray(parsed.decisions) ? parsed.decisions : [];\n\n  let md = '## ' + sysName + '\\n\\n';\n  if (overview) md += overview + '\\n\\n';\n  if (stack.length) {\n    md += '### Технологический стек\\n\\n';\n    for (const s of stack)\n      md +=\n        '- **' +\n        String(s.name || '').trim() +\n        '**' +\n        (s.purpose ? ' — ' + String(s.purpose).trim() : '') +\n        '\\n';\n    md += '\\n';\n  }\n  if (decisions.length) {\n    md += '### Ключевые архитектурные решения\\n\\n';\n    for (const d of decisions)\n      md +=\n        '- **' +\n        String(d.title || '').trim() +\n        '**' +\n        (d.rationale ? ' — ' + String(d.rationale).trim() : '') +\n        '\\n';\n    md += '\\n';\n  }\n\n  // C4 уровень 1 — Context.\n  const ctx = parsed.context || {};\n  const persons = Array.isArray(ctx.persons) ? ctx.persons : [];\n  const externals = Array.isArray(ctx.external_systems) ? ctx.external_systems : [];\n  const aliasSet = { system: 'system' };\n  const emittedC = new Set(['system']); // объявленные алиасы — без дублей (иначе ломается рендер C4)\n  const cLines = [\n    'C4Context',\n    '  title Контекст системы: ' + sysName,\n    '  System(system, \"' + sysName + '\")',\n  ];\n  persons.forEach((p, i) => {\n    const a = alias(p.id, 'p' + (i + 1));\n    aliasSet[String(p.id)] = a;\n    if (emittedC.has(a)) return;\n    emittedC.add(a);\n    cLines.push(\n      '  Person(' + a + ', \"' + esc(p.name || p.id) + '\"' + (p.descr ? ', \"' + esc(p.descr) + '\"' : '') + ')',\n    );\n  });\n  externals.forEach((e, i) => {\n    const a = alias(e.id, 'e' + (i + 1));\n    aliasSet[String(e.id)] = a;\n    if (emittedC.has(a)) return;\n    emittedC.add(a);\n    cLines.push(\n      '  System_Ext(' + a + ', \"' + esc(e.name || e.id) + '\"' + (e.descr ? ', \"' + esc(e.descr) + '\"' : '') + ')',\n    );\n  });\n  (Array.isArray(ctx.relations) ? ctx.relations : []).forEach((r) => {\n    const f = aliasSet[String(r.from)];\n    const t = aliasSet[String(r.to)];\n    if (f && t && f !== t) cLines.push('  Rel(' + f + ', ' + t + ', \"' + esc(r.label || '') + '\")');\n  });\n  const c4_context = cLines.join('\\n');\n\n  // C4 уровень 2 — Container (контейнеры внутри границы системы).\n  const cont = parsed.containers || {};\n  const items = Array.isArray(cont.items) ? cont.items : [];\n  const kset = {};\n  const emittedK = new Set(); // объявленные алиасы контейнерной диаграммы — без дублей\n  const kLines = ['C4Container', '  title Контейнеры: ' + sysName];\n  persons.forEach((p, i) => {\n    const a = aliasSet[String(p.id)] || alias(p.id, 'p' + (i + 1));\n    kset[String(p.id)] = a;\n    if (emittedK.has(a)) return;\n    emittedK.add(a);\n    kLines.push('  Person(' + a + ', \"' + esc(p.name || p.id) + '\")');\n  });\n  kLines.push('  System_Boundary(system_b, \"' + sysName + '\") {');\n  items\n    .filter((it) => (it.kind || 'app') !== 'ext')\n    .forEach((it, i) => {\n      const a = alias(it.id, 'c' + (i + 1));\n      kset[String(it.id)] = a;\n      if (emittedK.has(a)) return;\n      emittedK.add(a);\n      const macro =\n        it.kind === 'db' ? 'ContainerDb' : it.kind === 'queue' ? 'ContainerQueue' : 'Container';\n      kLines.push(\n        '    ' +\n          macro +\n          '(' +\n          a +\n          ', \"' +\n          esc(it.name || it.id) +\n          '\", \"' +\n          esc(it.tech || '') +\n          '\"' +\n          (it.descr ? ', \"' + esc(it.descr) + '\"' : '') +\n          ')',\n      );\n    });\n  kLines.push('  }');\n  externals.forEach((e, i) => {\n    const a = aliasSet[String(e.id)] || alias(e.id, 'e' + (i + 1));\n    kset[String(e.id)] = a;\n    if (emittedK.has(a)) return;\n    emittedK.add(a);\n    kLines.push('  System_Ext(' + a + ', \"' + esc(e.name || e.id) + '\")');\n  });\n  items\n    .filter((it) => (it.kind || 'app') === 'ext')\n    .forEach((it, i) => {\n      const a = alias(it.id, 'x' + (i + 1));\n      kset[String(it.id)] = a;\n      if (emittedK.has(a)) return;\n      emittedK.add(a);\n      kLines.push('  System_Ext(' + a + ', \"' + esc(it.name || it.id) + '\")');\n    });\n  (Array.isArray(cont.relations) ? cont.relations : []).forEach((r) => {\n    const f = kset[String(r.from)] || (String(r.from) === 'system' ? 'system_b' : null);\n    const t = kset[String(r.to)] || (String(r.to) === 'system' ? 'system_b' : null);\n    if (f && t && f !== t)\n      kLines.push(\n        '  Rel(' + f + ', ' + t + ', \"' + esc(r.label || '') + '\"' + (r.tech ? ', \"' + esc(r.tech) + '\"' : '') + ')',\n      );\n  });\n  const c4_container = kLines.join('\\n');\n\n  const _activeModel =\n    PROVIDER === 'claude'\n      ? CLAUDE_MODEL\n      : PROVIDER === 'develonica'\n        ? DEVELONICA_MODEL\n        : PROVIDER === 'lmstudio'\n          ? LMSTUDIO_MODEL\n          : MODEL;\n  const okResult = !!(overview || stack.length || items.length);\n  return [\n    {\n      json: {\n        _http_code: 200,\n        _gen: {\n          project_id: projectId,\n          status: okResult ? 'ready' : 'error',\n          generated_at: nowIso,\n          provider: PROVIDER,\n          model: _activeModel,\n          sources_count: hits.length,\n          summary_md:\n            md.trim() || '> Не удалось сформировать описание (LLM вернул пустой результат).',\n          c4_context,\n          c4_container,\n          raw_json: JSON.stringify(parsed).slice(0, 60000),\n        },\n      },\n    },\n  ];"
+      },
+      "id": "[gen]-Generate-Architecture",
+      "name": "[gen] Generate Architecture",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "project_architecture"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "keyValue": "={{ $('[gen] Parse Request').first().json.project_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $('[gen] Generate Architecture').first().json._gen.project_id }}",
+            "status": "={{ $('[gen] Generate Architecture').first().json._gen.status }}",
+            "generated_at": "={{ $('[gen] Generate Architecture').first().json._gen.generated_at }}",
+            "provider": "={{ $('[gen] Generate Architecture').first().json._gen.provider }}",
+            "model": "={{ $('[gen] Generate Architecture').first().json._gen.model }}",
+            "sources_count": "={{ $('[gen] Generate Architecture').first().json._gen.sources_count }}",
+            "summary_md": "={{ $('[gen] Generate Architecture').first().json._gen.summary_md }}",
+            "c4_context": "={{ $('[gen] Generate Architecture').first().json._gen.c4_context }}",
+            "c4_container": "={{ $('[gen] Generate Architecture').first().json._gen.c4_container }}",
+            "raw_json": "={{ $('[gen] Generate Architecture').first().json._gen.raw_json }}"
+          },
+          "matchingColumns": [
+            "project_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "[gen]-Save-Architecture",
+      "name": "[gen] Save Architecture",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        660,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const g = ($('[gen] Generate Architecture').first().json || {})._gen || {};\n  return [{ json: { _http_code: 200, _body: g } }];"
+      },
+      "id": "[gen]-Build-Response",
+      "name": "[gen] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[gen]-respond",
+      "name": "[gen] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1140,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "[archGet] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[archGet] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[archGet] Auth": {
+      "main": [
+        [
+          {
+            "node": "[archGet] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[archGet] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[archGet] Get Saved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[archGet] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[archGet] Get Saved": {
+      "main": [
+        [
+          {
+            "node": "[archGet] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[archGet] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[archGet] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[gen] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Auth": {
+      "main": [
+        [
+          {
+            "node": "[gen] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[gen] Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[gen] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Parse Request": {
+      "main": [
+        [
+          {
+            "node": "[gen] Get Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Get Docs": {
+      "main": [
+        [
+          {
+            "node": "[gen] Get LLM Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Get LLM Config": {
+      "main": [
+        [
+          {
+            "node": "[gen] Build RAG Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Build RAG Request": {
+      "main": [
+        [
+          {
+            "node": "[gen] RAG Search (sub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] RAG Search (sub)": {
+      "main": [
+        [
+          {
+            "node": "[gen] Generate Architecture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Generate Architecture": {
+      "main": [
+        [
+          {
+            "node": "[gen] Save Architecture",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Save Architecture": {
+      "main": [
+        [
+          {
+            "node": "[gen] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[gen] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[gen] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -11,6 +11,10 @@ venv/
 .env.local
 *.env.*
 
+# Реальный корпоративный токен Девелоники, зашифрованный ключом из compose.yaml → вместе
+# восстановимо. Не коммитить: bootstrap.sh генерирует его из DEVELONICA_API_KEY в .env.
+n8n/credentials/docs-develonica-cred.json
+
 # Logs
 *.log
 
@@ -26,6 +30,17 @@ coverage/
 *.swo
 *.tmp
 
+# macOS
+.DS_Store
+
+# Build output
+frontend/dist
+
 frontend/node_modules
 qdrant_storage
 uploads
+
+# Бэкапы
+n8n/backups/
+# n8n: локализованные под конкретный стенд копии воркфлоу (per-stand, не для коммита)
+n8n/workflows_localized/

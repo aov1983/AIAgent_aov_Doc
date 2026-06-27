@@ -1,0 +1,169 @@
+{
+  "id": "wf-api-login",
+  "name": "wf_api_login",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "auth/login",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "login--node-webhook",
+      "name": "[login] Webhook: POST /auth/login",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        0
+      ],
+      "webhookId": "docs-auth-login"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "users"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "username",
+              "keyValue": "={{ $json.body.username }}"
+            },
+            {
+              "keyName": "password",
+              "keyValue": "={{ $json.body.password }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "login--node-find-user",
+      "name": "[login] Find User (DataTable)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1008,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-user",
+              "leftValue": "={{ $json.username || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "login--node-if",
+      "name": "[login] If Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { access_token: $json.username, token_type: 'bearer', role: $json.role, username: $json.username } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "login--node-respond-ok",
+      "name": "[login] Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -608,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { detail: 'Invalid credentials' } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "login--node-respond-fail",
+      "name": "[login] Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -608,
+        128
+      ]
+    }
+  ],
+  "connections": {
+    "[login] Webhook: POST /auth/login": {
+      "main": [
+        [
+          {
+            "node": "[login] Find User (DataTable)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[login] Find User (DataTable)": {
+      "main": [
+        [
+          {
+            "node": "[login] If Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[login] If Found": {
+      "main": [
+        [
+          {
+            "node": "[login] Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[login] Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

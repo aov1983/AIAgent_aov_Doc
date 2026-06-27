@@ -31,7 +31,9 @@ except ImportError:
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from agent.core import RequirementsAgent
+from agent.chat_engine import DocumentChatEngine
 from agent.models import ModelConfig, ModelProvider
+from api.chat_api import router as chat_router, chat_state
 
 
 def _build_model_configs() -> list[ModelConfig]:
@@ -143,6 +145,9 @@ agent = RequirementsAgent(
     model_configs=_build_model_configs(),
     use_mock_rag=USE_MOCK_RAG,
 )
+
+# Чат по документам поверх того же LLM и Qdrant.
+chat_state.engine = DocumentChatEngine(llm_client=agent.primary_model)
 
 # --- Schemas ---
 class Token(BaseModel):
@@ -397,6 +402,9 @@ async def get_file_history(current_user: dict = Depends(get_current_user)):
 
     items.sort(key=lambda x: x["date"], reverse=True)
     return items
+
+app.include_router(chat_router, dependencies=[Depends(get_current_user)])
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

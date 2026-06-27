@@ -14,12 +14,14 @@ const NODE_COLORS: Record<string, string> = {
   section: '#388e3c',
   paragraph: '#f57c00',
   chunk: '#7b1fa2',
+  external: '#c2185b',
 };
 
 const EDGE_COLORS: Record<string, string> = {
   contains: '#90a4ae',
   similar_to: '#26a69a',
   conflicts_with: '#e53935',
+  intersects: '#c2185b',
 };
 
 interface PopoverState {
@@ -54,7 +56,10 @@ export function GraphView({ graph, height = 520 }: GraphViewProps) {
           target: e.target,
           type: e.type,
           weight: e.weight,
-          label: e.type === 'similar_to' ? e.weight.toFixed(2) : '',
+          label:
+            e.type === 'similar_to' || e.type === 'intersects'
+              ? e.weight.toFixed(2)
+              : '',
         },
       }));
     return [...nodes, ...edges];
@@ -73,8 +78,23 @@ export function GraphView({ graph, height = 520 }: GraphViewProps) {
           'font-size': 10,
           'text-valign': 'center',
           'text-halign': 'center',
-          width: (ele: any) => (ele.data('type') === 'chapter' ? 50 : ele.data('type') === 'section' ? 40 : 28),
-          height: (ele: any) => (ele.data('type') === 'chapter' ? 50 : ele.data('type') === 'section' ? 40 : 28),
+          width: (ele: any) =>
+            ele.data('type') === 'chapter'
+              ? 50
+              : ele.data('type') === 'section'
+                ? 40
+                : ele.data('type') === 'external'
+                  ? 34
+                  : 28,
+          height: (ele: any) =>
+            ele.data('type') === 'chapter'
+              ? 50
+              : ele.data('type') === 'section'
+                ? 40
+                : ele.data('type') === 'external'
+                  ? 34
+                  : 28,
+          shape: (ele: any) => (ele.data('type') === 'external' ? 'diamond' : 'ellipse'),
         },
       },
       {
@@ -85,7 +105,12 @@ export function GraphView({ graph, height = 520 }: GraphViewProps) {
           'target-arrow-color': (ele: any) => EDGE_COLORS[ele.data('type')] || '#bdbdbd',
           'target-arrow-shape': 'triangle',
           'curve-style': 'bezier',
-          'line-style': (ele: any) => (ele.data('type') === 'similar_to' ? 'dashed' : 'solid'),
+          'line-style': (ele: any) =>
+            ele.data('type') === 'similar_to'
+              ? 'dashed'
+              : ele.data('type') === 'intersects'
+                ? 'dotted'
+                : 'solid',
           label: 'data(label)',
           'font-size': 8,
           color: '#37474f',

@@ -1,0 +1,628 @@
+{
+  "id": "wf-job-store",
+  "name": "wf_job_store",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "set-status",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "set-status-webhook",
+      "name": "Webhook: POST /set-status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        -460
+      ],
+      "webhookId": "docs-set-status"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_status"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.body.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json.body.job_id }}",
+            "stage": "={{ $json.body.stage }}",
+            "percent": "={{ $json.body.percent }}",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": ["job_id"],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "set-status-upsert",
+      "name": "Upsert Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chunk-save",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "chunk-save-webhook",
+      "name": "Webhook: POST /chunk-save",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        -160
+      ],
+      "webhookId": "docs-chunk-save"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_chunks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.body.job_id }}"
+            },
+            {
+              "keyName": "chunk_index",
+              "keyValue": "={{ $json.body.chunk_index }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json.body.job_id }}",
+            "chunk_index": "={{ $json.body.chunk_index }}",
+            "output": "={{ $json.body.output }}",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "job_id",
+            "chunk_index"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "chunk-save-upsert",
+      "name": "Upsert Chunk",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "chunk-list",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "chunk-list-webhook",
+      "name": "Webhook: GET /chunk-list",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        160
+      ],
+      "webhookId": "docs-chunk-list"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_chunks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.query.job_id || '' }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "chunk-list-get",
+      "name": "Get Chunks",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        160
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Возвращаем сохранённые чанки задачи для возобновления: {chunks:[{chunk_index, output}]}.\n// Пустой список = чекпойнтов нет (обработка ещё не доходила или job новый).\nconst rows = $input\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && r.job_id !== undefined);\nconst chunks = rows.map((r) => ({\n  chunk_index: Number(r.chunk_index),\n  output: r.output != null ? String(r.output) : '',\n}));\nreturn [{ json: { chunks } }];"
+      },
+      "id": "chunk-list-build",
+      "name": "Build Chunk List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "file-save",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "file-save-webhook",
+      "name": "Webhook: POST /file-save",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        460
+      ],
+      "webhookId": "docs-file-save"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_files"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.body.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json.body.job_id }}",
+            "document_id": "={{ $json.body.document_id }}",
+            "filename": "={{ $json.body.filename }}",
+            "mime": "={{ $json.body.mime }}",
+            "file_b64": "={{ $json.body.file_b64 }}",
+            "uploaded_by": "={{ $json.body.uploaded_by }}",
+            "created_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "job_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "file-save-upsert",
+      "name": "Upsert File",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "job-cancel",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "job-cancel-post-webhook",
+      "name": "Webhook: POST /job-cancel",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        760
+      ],
+      "webhookId": "docs-job-cancel-post"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_chunks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.body.job_id }}"
+            },
+            {
+              "keyName": "chunk_index",
+              "keyValue": "={{ -1 }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json.body.job_id }}",
+            "chunk_index": "={{ -1 }}",
+            "output": "CANCEL",
+            "updated_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "job_id",
+            "chunk_index"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "job-cancel-set",
+      "name": "Set Cancel",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $('Webhook: POST /job-cancel').first().json.body.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "partial"
+          },
+          "matchingColumns": [
+            "job_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "job-cancel-graph-partial",
+      "name": "Set Graph Partial",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        80,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ok: true } }];"
+      },
+      "id": "job-cancel-ok",
+      "name": "Cancel OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "job-cancel",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "job-cancel-get-webhook",
+      "name": "Webhook: GET /job-cancel",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        1020
+      ],
+      "webhookId": "docs-job-cancel-get"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_chunks"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.query.job_id || '' }}"
+            },
+            {
+              "keyName": "chunk_index",
+              "keyValue": "={{ -1 }}"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "job-cancel-get",
+      "name": "Get Cancel",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        1020
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Флаг отмены = строка job_chunks с chunk_index=-1 и output='CANCEL'. Нет строки → не отменено.\nconst r = $input.first() && $input.first().json;\nconst out = r && r.output != null ? String(r.output) : '';\nreturn [{ json: { cancelled: out === 'CANCEL' } }];"
+      },
+      "id": "job-cancel-build",
+      "name": "Build Cancel State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        1020
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "graph-status",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "graph-status-webhook",
+      "name": "Webhook: POST /graph-status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        1280
+      ],
+      "webhookId": "docs-graph-status"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json.body.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "={{ $json.body.status }}"
+          },
+          "matchingColumns": [
+            "job_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "graph-status-upsert",
+      "name": "Update Graph Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        1280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ok: true } }];"
+      },
+      "id": "graph-status-ok",
+      "name": "Graph Status OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        1280
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: POST /set-status": {
+      "main": [
+        [
+          {
+            "node": "Upsert Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: POST /chunk-save": {
+      "main": [
+        [
+          {
+            "node": "Upsert Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: GET /chunk-list": {
+      "main": [
+        [
+          {
+            "node": "Get Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Chunks": {
+      "main": [
+        [
+          {
+            "node": "Build Chunk List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: POST /file-save": {
+      "main": [
+        [
+          {
+            "node": "Upsert File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: POST /job-cancel": {
+      "main": [
+        [
+          {
+            "node": "Set Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Cancel": {
+      "main": [
+        [
+          {
+            "node": "Set Graph Partial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Graph Partial": {
+      "main": [
+        [
+          {
+            "node": "Cancel OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: GET /job-cancel": {
+      "main": [
+        [
+          {
+            "node": "Get Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Cancel": {
+      "main": [
+        [
+          {
+            "node": "Build Cancel State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: POST /graph-status": {
+      "main": [
+        [
+          {
+            "node": "Update Graph Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Graph Status": {
+      "main": [
+        [
+          {
+            "node": "Graph Status OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

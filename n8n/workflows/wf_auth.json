@@ -1,0 +1,115 @@
+{
+  "id": "wf-auth",
+  "name": "wf_auth",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "node-trigger",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json || {};\nconst headers = item.headers || {};\nconst auth = headers.authorization || headers.Authorization || '';\nconst token = auth.startsWith('Bearer ') ? auth.slice(7) : auth;\nreturn [{ json: { _token: token } }];"
+      },
+      "id": "node-extract",
+      "name": "Extract Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "users"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "username",
+              "condition": "eq",
+              "keyValue": "={{ $json._token }}"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "node-auth",
+      "name": "Auth Lookup",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first()?.json;\nif (!row || !row.username) {\n  return [\n    {\n      json: {\n        _authed: false,\n        _http_code: 401,\n        _body: { detail: 'Invalid token' },\n        _username: null,\n        _role: null,\n      },\n    },\n  ];\n}\nreturn [\n  {\n    json: {\n      _authed: true,\n      _http_code: 200,\n      _body: null,\n      _username: row.username,\n      _role: row.role || null,\n    },\n  },\n];"
+      },
+      "id": "node-build",
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        0
+      ],
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Extract Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Token": {
+      "main": [
+        [
+          {
+            "node": "Auth Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Lookup": {
+      "main": [
+        [
+          {
+            "node": "Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

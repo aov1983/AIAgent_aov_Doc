@@ -1,0 +1,676 @@
+{
+  "id": "wf-api-chat",
+  "name": "wf_api_chat",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat/ask",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "chat--node-webhook",
+      "name": "[chat] Webhook: POST /chat/ask",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        1200
+      ],
+      "webhookId": "docs-chat-ask"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "chat--node-auth",
+      "name": "[chat] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1408,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "chat--node-if-auth",
+      "name": "[chat] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1200,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Достаём поля запроса из webhook-нода. Поддерживаем оба варианта: top-level и body.\nconst hook = $('[chat] Webhook: POST /chat/ask').first().json || {};\nconst body = hook.body && typeof hook.body === 'object' ? hook.body : hook;\nconst message = (body.message || '').toString().trim();\nconst document_id = body.document_id ? String(body.document_id) : null;\n// Набор документов активного проекта (фильтр интерфейса по проекту). Используется в режиме «по\n// всей базе»: контекст ограничивается этими document_id. document_id (один) имеет приоритет.\nconst document_ids = Array.isArray(body.document_ids) ? body.document_ids.map(String).filter(Boolean) : [];\nconst history = Array.isArray(body.history) ? body.history.slice(-6) : [];\nif (!message) {\n  return [{ json: { _http_code: 400, _body: { detail: 'message is required' } } }];\n}\nreturn [{ json: { _http_code: 200, message, document_id, document_ids, history } }];"
+      },
+      "id": "chat--node-parse",
+      "name": "[chat] Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1008,
+        1056
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "bad",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 400,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "chat--node-if-bad",
+      "name": "[chat] If Bad Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -800,
+        1056
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sub-workflow вернул 1 item { _idx, hits }. Превращаем hits в sources + формируем system/user prompt'ы для AI Agent.\nconst src = $('[chat] Parse Request').first().json || {};\nconst out = ($input.first() && $input.first().json) || {};\nconst hits = Array.isArray(out.hits) ? out.hits : [];\n\nconst sources = hits.map((h) => {\n  const pl = h.payload || {};\n  return {\n    chunk_id: String(pl.paragraph_id || ''),\n    content: pl.content || '',\n    similarity_score: typeof h.score === 'number' ? h.score : 0,\n    document_id: pl.document_id || '',\n    source_document: pl.chapter_title || pl.document_title || pl.document_id || 'unknown',\n  };\n});\n\nconst contextText = sources.length\n  ? sources\n      .map(\n        (s, i) => `[${i + 1}] (score=${s.similarity_score.toFixed(2)}) ${(s.content || '').trim()}`,\n      )\n      .join('\\n')\n  : '(контекст пуст)';\n\nconst history = Array.isArray(src.history) ? src.history : [];\nconst historyText = history.length\n  ? 'История диалога:\\n' +\n    history\n      .map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${m.content || ''}`)\n      .join('\\n')\n  : '';\n\nconst userPrompt =\n  (historyText ? historyText + '\\n\\n' : '') +\n  `Контекст из документов:\\n${contextText}\\n\\nВопрос: ${src.message}\\nОтвет:`;\n\nconst systemPrompt =\n  'Ты — ассистент, отвечающий на вопросы по корпоративным документам. Используй ТОЛЬКО факты из приведённого контекста. Если ответа в контексте нет — честно скажи об этом. Отвечай кратко и по-русски.';\n\nreturn [\n  {\n    json: {\n      _system_prompt: systemPrompt,\n      _user_prompt: userPrompt,\n      sources,\n      message: src.message,\n      document_id: src.document_id,\n    },\n  },\n];"
+      },
+      "id": "chat--node-build-prompt",
+      "name": "[chat] Build Prompt & Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Мультипровайдерный вызов LLM для чата (свободный текст, БЕЗ принуждения к JSON).\n// Провайдер берётся из config(key=llm_extraction) нодой [chat] Get LLM Config (dataTable) — ОБЩИЙ\n// тумблер с обработкой документов (Merge Chunks). Заменяет нативные lmChatOllama + AI Agent (статичный\n// credential не переключить). AI Agent был без tools/памяти: история диалога и RAG-контекст уже\n// вшиты в _user_prompt нодой Build Prompt & Sources, поэтому замена эквивалентна.\nconst http = this.helpers.httpRequest.bind(this.helpers);\nconst src = $('[chat] Build Prompt & Sources').first().json || {};\nconst systemPrompt = src._system_prompt || '';\nconst userPrompt = src._user_prompt || '';\n\nconst OLLAMA = 'http://host.docker.internal:11434/api/chat';\nlet MODEL = 'qwen3:8b';\nlet DEVELONICA_URL =\n  String('https://ai.develonica.group').replace(/\\/+$/, '') +\n  '/api/v1/chat/completions';\nlet LMSTUDIO_URL =\n  String('http://192.168.2.135:1234/v1').replace(/\\/+$/, '') +\n  '/chat/completions';\nlet API_KEY = ''; let PROVIDER = 'ollama',\n  CLAUDE_MODEL = 'claude-haiku-4-5',\n  DEVELONICA_MODEL = String('dvl-analyst'),\n  LMSTUDIO_MODEL = String('google/gemma-4-12b');\n// Конфиг читаем нодой [chat] Get LLM Config (dataTable, без self-HTTP к localhost:5678 —\n// на «чужих» стендах task-runner в отдельном контейнере, localhost не доходит до n8n).\n{\n  const _c = $('[chat] Get LLM Config').first();\n  const lc = (_c && _c.json) || {};\n  const _p = String(lc.provider || '').toLowerCase(); API_KEY = lc.api_key ? String(lc.api_key) : '';\n  if (_p === 'claude') { PROVIDER = 'claude'; if (lc.model) CLAUDE_MODEL = String(lc.model); }\n  else if (_p === 'develonica') { PROVIDER = 'develonica'; if (lc.model) DEVELONICA_MODEL = String(lc.model); if (lc.base_url) DEVELONICA_URL = String(lc.base_url).replace(/\\/+$/, '') + '/api/v1/chat/completions'; }\n  else if (_p === 'lmstudio') { PROVIDER = 'lmstudio'; if (lc.model) LMSTUDIO_MODEL = String(lc.model); if (lc.base_url) LMSTUDIO_URL = String(lc.base_url).replace(/\\/+$/, '') + '/chat/completions'; }\n}\n\nconst _sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst _httpStatus = (e) => {\n  const s = e && (e.httpCode || e.statusCode || (e.response && (e.response.status || e.response.statusCode)) || (e.cause && e.cause.statusCode));\n  if (s) return Number(s);\n  const m = String((e && e.message) || '').match(/\\b(429|529|500|502|503|504)\\b/);\n  return m ? Number(m[1]) : 0;\n};\nconst _withRetry = async (fn) => {\n  const MAX = 3;\n  let delay = 1500;\n  for (let attempt = 0; ; attempt++) {\n    try { return await fn(); }\n    catch (e) {\n      const st = _httpStatus(e);\n      const retriable = st === 429 || st === 529 || (st >= 500 && st <= 504) ||\n        (st === 0 && /timeout|socket|network|ECONN|EAI_AGAIN|ETIMEDOUT|aborted/i.test(String((e && e.message) || '')));\n      if (attempt >= MAX || !retriable) throw e;\n      await _sleep(Math.min(delay, 20000));\n      delay *= 2;\n    }\n  }\n};\n\nconst callChat = async () => {\n  if (PROVIDER === 'claude') {\n    const r = await _withRetry(() => http({\n      method: 'POST', url: 'https://api.anthropic.com/v1/messages', json: true, timeout: 120000,\n      headers: { 'x-api-key': (API_KEY || '').trim(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },\n      body: { model: CLAUDE_MODEL, max_tokens: 1500, temperature: 0.1, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] },\n    }));\n    return (r && r.content && r.content[0] && r.content[0].text) || '';\n  }\n  if (PROVIDER === 'develonica') {\n    const r = await _withRetry(() => http({\n      method: 'POST', url: DEVELONICA_URL, json: true, timeout: 120000,\n      headers: { Authorization: 'Bearer ' + (API_KEY || '').trim(), 'content-type': 'application/json' },\n      body: { model: DEVELONICA_MODEL, max_tokens: 1500, temperature: 0.1, stream: false, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] },\n    }));\n    return (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  }\n  if (PROVIDER === 'lmstudio') {\n    const r = await _withRetry(() => http({\n      method: 'POST', url: LMSTUDIO_URL, json: true, timeout: 180000,\n      headers: { Authorization: 'Bearer ' + (API_KEY || 'lm-studio').trim(), 'content-type': 'application/json' },\n      body: { model: LMSTUDIO_MODEL, max_tokens: 1500, temperature: 0.1, stream: false, reasoning_effort: 'low', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] },\n    }));\n    return (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  }\n  const r = await _withRetry(() => http({\n    method: 'POST', url: OLLAMA, json: true, timeout: 180000,\n    body: { model: MODEL, stream: false, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], options: { temperature: 0.1, num_ctx: 16384 } },\n  }));\n  return (r && r.message && r.message.content) || (r && r.response) || '';\n};\n\nlet answer = '';\ntry { answer = await callChat(); } catch (e) { answer = ''; }\n// Снимаем reasoning-блоки <think>…</think> (qwen3/gpt-oss отдают их в свободном тексте).\nanswer = String(answer || '').replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\nreturn [{ json: { output: answer, _provider: PROVIDER } }];"
+      },
+      "id": "chat--node-llm-call",
+      "name": "[chat] LLM Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        1360
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI Agent (toolsAgent) возвращает { output: '...' }; chainLlm возвращал { text }.\n// Читаем оба поля для совместимости при будущих переключениях.\nconst llm = $input.first().json || {};\nconst answer = (llm.output || llm.text || llm.response || '').toString().trim();\nconst src = $('[chat] Build Prompt & Sources').first().json;\nreturn [\n  {\n    json: {\n      _http_code: 200,\n      _body: { answer: answer || '(пустой ответ)', sources: src.sources || [] },\n    },\n  },\n];"
+      },
+      "id": "chat--node-build-response",
+      "name": "[chat] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        1360
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "chat--node-respond",
+      "name": "[chat] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        416,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "path": "rag/search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ragSearch--node-webhook",
+      "name": "[ragSearch] Webhook: GET /rag/search",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1616,
+        1936
+      ],
+      "webhookId": "docs-rag-search"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "ragSearch--node-auth",
+      "name": "[ragSearch] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1424,
+        1936
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ragSearch--node-if-auth",
+      "name": "[ragSearch] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1232,
+        1936
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсим query-параметры webhook GET. Контракт совместим с FastAPI /api/rag/search:\n//   query (required), threshold (default 0.5), exclude_document_id (optional),\n//   document_ids (optional, CSV — ограничение поиска документами активного проекта).\nconst hook = $('[ragSearch] Webhook: GET /rag/search').first().json || {};\nconst q =\n  hook.query && typeof hook.query === 'object'\n    ? hook.query\n    : hook.params && typeof hook.params === 'object'\n      ? hook.params\n      : hook;\nconst query = (q.query || '').toString().trim();\nconst rawThr = q.threshold;\nlet threshold = 0.5;\nif (rawThr !== undefined && rawThr !== null && rawThr !== '') {\n  const parsed = Number(rawThr);\n  if (!Number.isNaN(parsed)) threshold = parsed;\n}\nconst exclude = q.exclude_document_id ? String(q.exclude_document_id) : null;\n// document_ids приходит CSV-строкой (массивы в query-параметрах сериализуются неоднозначно).\nconst rawIds = q.document_ids;\nconst document_ids =\n  typeof rawIds === 'string' && rawIds\n    ? rawIds.split(',').map((s) => s.trim()).filter(Boolean)\n    : Array.isArray(rawIds)\n      ? rawIds.map(String).filter(Boolean)\n      : [];\nif (!query) {\n  return [{ json: { _http_code: 400, _body: { detail: 'query is required' } } }];\n}\nreturn [{ json: { _http_code: 200, query, threshold, exclude_document_id: exclude, document_ids } }];"
+      },
+      "id": "ragSearch--node-parse",
+      "name": "[ragSearch] Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        1792
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "bad",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 400,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ragSearch--node-if-bad",
+      "name": "[ragSearch] If Bad Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -784,
+        1792
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sub-workflow вернул 1 item { _idx, hits }. Превращаем в RagSearchResult[].\nconst out = ($input.first() && $input.first().json) || {};\nconst hits = Array.isArray(out.hits) ? out.hits : [];\n\nconst rows = hits.map((h) => {\n  const pl = h.payload || {};\n  const document_id = pl.document_id || '';\n  return {\n    chunk_id: String(pl.paragraph_id || ''),\n    content: pl.content || '',\n    similarity_score: typeof h.score === 'number' ? h.score : 0,\n    source_document: pl.chapter_title || pl.document_title || document_id || 'unknown',\n    metadata: Object.assign({}, pl, { document_id }),\n  };\n});\n\nreturn [{ json: { _http_code: 200, _body: rows } }];"
+      },
+      "id": "ragSearch--node-normalize",
+      "name": "[ragSearch] Normalize → RagSearchResult[]",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        2080
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ragSearch--node-respond",
+      "name": "[ragSearch] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        1776
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Готовим 1 input item для wf_rag_search из распарсенного chat-запроса.\nconst src = $('[chat] Parse Request').first().json || {};\nconst includeIds = Array.isArray(src.document_ids) ? src.document_ids : [];\nreturn [\n  {\n    json: {\n      query: src.message,\n      topK: 5,\n      threshold: 0.3,\n      includeDocumentId: src.document_id || '',\n      // Фильтр по проекту: непустой набор → wf_rag ограничит выдачу этими документами.\n      includeDocumentIds: includeIds.length ? includeIds : undefined,\n    },\n  },\n];"
+      },
+      "id": "chat--node-build-rag-req",
+      "name": "[chat] Build RAG Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "chat--node-rag-search-sub",
+      "name": "[chat] RAG Search (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -432,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Готовим 1 input item для wf_rag_search из /rag/search-запроса.\nconst src = $('[ragSearch] Parse Request').first().json || {};\nconst includeIds = Array.isArray(src.document_ids) ? src.document_ids : [];\nreturn [\n  {\n    json: {\n      query: src.query,\n      topK: 10,\n      threshold: src.threshold || 0,\n      excludeDocumentId: src.exclude_document_id || '',\n      // Фильтр по проекту: непустой набор → wf_rag ограничит выдачу этими документами.\n      includeDocumentIds: includeIds.length ? includeIds : undefined,\n    },\n  },\n];"
+      },
+      "id": "ragSearch--node-build-rag-req",
+      "name": "[ragSearch] Build RAG Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "ragSearch--node-rag-search-sub",
+      "name": "[ragSearch] RAG Search (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -320,
+        2080
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "config"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "key",
+              "condition": "eq",
+              "keyValue": "llm_extraction"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "chat--node-get-llm-config",
+      "name": "[chat] Get LLM Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -168,
+        1520
+      ],
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "[chat] Webhook: POST /chat/ask": {
+      "main": [
+        [
+          {
+            "node": "[chat] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Auth": {
+      "main": [
+        [
+          {
+            "node": "[chat] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[chat] Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[chat] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Parse Request": {
+      "main": [
+        [
+          {
+            "node": "[chat] If Bad Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] If Bad Request": {
+      "main": [
+        [
+          {
+            "node": "[chat] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[chat] Build RAG Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Build Prompt & Sources": {
+      "main": [
+        [
+          {
+            "node": "[chat] Get LLM Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[chat] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] Webhook: GET /rag/search": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] Auth": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[ragSearch] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] Parse Request": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] If Bad Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] If Bad Request": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[ragSearch] Build RAG Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] Normalize → RagSearchResult[]": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Build RAG Request": {
+      "main": [
+        [
+          {
+            "node": "[chat] RAG Search (sub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] RAG Search (sub)": {
+      "main": [
+        [
+          {
+            "node": "[chat] Build Prompt & Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] Build RAG Request": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] RAG Search (sub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[ragSearch] RAG Search (sub)": {
+      "main": [
+        [
+          {
+            "node": "[ragSearch] Normalize → RagSearchResult[]",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] LLM Call": {
+      "main": [
+        [
+          {
+            "node": "[chat] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[chat] Get LLM Config": {
+      "main": [
+        [
+          {
+            "node": "[chat] LLM Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

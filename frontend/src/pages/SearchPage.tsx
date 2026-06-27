@@ -15,8 +15,11 @@ import {
 import { Search as SearchIcon } from '@mui/icons-material';
 import { ragApi } from '../api';
 import type { RagSearchResult } from '../types';
+import { useProject } from '../hooks/useProject';
 
 export function SearchPage() {
+  // Поиск ограничен документами активного проекта (передаём их document_ids в RAG).
+  const { currentDocumentIds, currentProject } = useProject();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<RagSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -26,10 +29,21 @@ export function SearchPage() {
   const handleSearch = async () => {
     if (!query.trim()) return;
 
+    if (currentDocumentIds.length === 0) {
+      setError(
+        currentProject
+          ? `В проекте «${currentProject.name}» нет документов для поиска.`
+          : 'Создайте проект и выберите его в шапке, чтобы искать по его документам.',
+      );
+      setResults([]);
+      setSearched(true);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const data = await ragApi.search(query, 0.5);
+      const data = await ragApi.search(query, 0.5, undefined, currentDocumentIds);
       setResults(data);
       setSearched(true);
     } catch (e: any) {

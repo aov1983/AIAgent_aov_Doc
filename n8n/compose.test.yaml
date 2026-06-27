@@ -1,0 +1,130 @@
+# Изолированный ТЕСТОВЫЙ стек для проверки восстановления из бэкапа (см. BACKUP.md).
+# Отдельный project-name (test-n8n) → отдельные volumes (test-n8n_*); container_name test-*.
+# Те же хостовые порты, что у docs-* — поднимать ТОЛЬКО когда оригинальный стек выключен.
+# БЕЗ init-сервисов (owner-init/data-table-init/import/activate/qdrant-init): всё прикладное
+# состояние (owner, Data Tables, workflow'ы, credentials, коллекция) заливается из бэкапа.
+#
+#   docker compose -f compose.test.yaml up -d postgres qdrant      # затем pg_restore + qdrant recover
+#   docker compose -f compose.test.yaml up -d                      # поднять рантайм
+#   docker compose -f compose.test.yaml down -v                    # снести тестовый стек целиком
+name: test-n8n
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: test-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: n8n
+      POSTGRES_DB: n8n
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.1
+    container_name: test-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  embeddings:
+    # Переиспользуем уже собранный образ оригинального стека (без пересборки).
+    image: docs-n8n-embeddings:latest
+    container_name: test-embeddings
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  docling:
+    image: ghcr.io/docling-project/docling-serve:latest
+    container_name: test-docling
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5001/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  n8n:
+    image: n8nio/n8n:2.21.2
+    container_name: test-n8n
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      embeddings:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: n8n
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Europe/Moscow
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_DEFAULT_BINARY_DATA_MODE: default
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_RUNNERS_TASK_TIMEOUT: "10800"
+      N8N_DATA_TABLES_MAX_SIZE_BYTES: "536870912"
+      # ОБЯЗАТЕЛЬНО тот же ключ, что у оригинала — иначе восстановленные credentials не расшифруются.
+      N8N_ENCRYPTION_KEY: docs-n8n-encryption-key-2026-fixed-v1
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION_NAME: docs_chunks
+      QDRANT_API_KEY: ""
+      EMBEDDINGS_URL: http://embeddings:8100/embed
+      LLAMA3_BASE_URL: http://host.docker.internal:11434/v1
+      LLAMA3_MODEL_NAME: qwen3:8b
+      DOCLING_URL: http://docling:5001/v1/convert/file
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:5678/healthz', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  n8n_data:

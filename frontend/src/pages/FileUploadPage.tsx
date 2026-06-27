@@ -1,24 +1,24 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
   Paper,
   Button,
-  LinearProgress,
   Alert,
   Chip,
-  Divider,
   Grid,
   Card,
   CardContent,
-  IconButton,
-  Tooltip,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -29,11 +29,13 @@ import {
   FolderOpen as FolderIcon,
   TableChart as TableIcon,
 } from '@mui/icons-material';
-import { uploadApi, graphApi, paragraphsApi } from '../api';
-import type { AnalysisResponse, RagSearchResult, GraphData, ParagraphRow } from '../types';
+import { uploadApi, graphApi, paragraphsApi, requirementsApi } from '../api';
+import type { AnalysisResponse, RagSearchResult, GraphData, ParagraphRow, ExtractedRequirement } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useProject } from '../hooks/useProject';
 import { GraphCard } from '../components/GraphCard';
+import { ProcessingProgress } from '../components/ProcessingProgress';
 
 interface FileUploadPageProps {
   userRole: string;
@@ -43,12 +45,24 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [stage, setStage] = useState('');
+  // Момент старта обработки — для таймера «прошло» в индикаторе прогресса.
+  const [startedAt, setStartedAt] = useState('');
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState('');
   const [similarResults, setSimilarResults] = useState<RagSearchResult[]>([]);
   const [reportContent, setReportContent] = useState('');
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphRow[]>([]);
+  // Проект, к которому привязать загружаемый документ. По умолчанию — активный проект из шапки
+  // (можно переопределить вручную). reloadDocuments обновит общий список после загрузки.
+  const { projects, currentProjectId, reloadDocuments } = useProject();
+  const [projectId, setProjectId] = useState('');
+
+  // Подставляем активный проект, как только контекст его узнал (пока пользователь не выбрал другой).
+  useEffect(() => {
+    setProjectId((prev) => prev || currentProjectId);
+  }, [currentProjectId]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -66,36 +80,75 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
 
     setUploading(true);
     setProgress(0);
+    setStage('Загрузка файла');
+    setStartedAt(new Date().toISOString());
     setError('');
 
-    // Simulate progress
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 90) {
-          clearInterval(progressInterval);
-          return 90;
+    // Async-обработка: /upload отвечает сразу {job_id, document_id, status:'processing'},
+    // документ молотится в фоне. Прогресс И ЗАВЕРШЕНИЕ ловим по GET /jobs/status (percent=100),
+    // не держа HTTP-соединение на всё время обработки (большие docs идут 10-20 мин).
+    // document_id генерим на клиенте — бэкенд (Parse) использует его, и мы знаем его сразу.
+    const jobId = uploadApi.newJobId();
+    const documentId = uploadApi.newDocumentId();
+
+    let finished = false;
+    const done = new Promise<void>((resolve, reject) => {
+      const iv = setInterval(async () => {
+        try {
+          const s = await uploadApi.getStatus(jobId);
+          // прогресс только растёт — не даём ему скакать назад между опросами
+          setProgress((prev) => (s.percent > prev ? s.percent : prev));
+          if (s.stage) setStage(s.stage);
+          if (s.percent >= 100) {
+            finished = true;
+            clearInterval(iv);
+            resolve();
+          }
+        } catch {
+          /* строка статуса ещё не создана — игнорируем */
         }
-        return prev + 10;
-      });
-    }, 300);
+      }, 1500);
+      // страховка: не ждём вечно, если обработка зависла
+      setTimeout(() => {
+        if (!finished) {
+          clearInterval(iv);
+          reject(new Error('Обработка превысила лимит времени (30 мин)'));
+        }
+      }, 30 * 60 * 1000);
+    });
 
     try {
-      const response = await uploadApi.uploadDocument(file);
-      clearInterval(progressInterval);
+      // мгновенный ответ — обработка продолжается в фоне. project_id передаём прямо в /upload —
+      // бэк привязывает документ к проекту атомарно при создании pending-строки graphs
+      // ([upload] Parse + Generate IDs → Persist Graph Pending). Отдельный /projects/assign не нужен:
+      // он срабатывал раньше создания строки (гонка) и привязка терялась.
+      await uploadApi.uploadDocument(file, jobId, documentId, projectId);
+      // ждём завершения по статусу (percent=100)
+      await done;
       setProgress(100);
-      setResult(response);
-      setReportContent(response.message);
+      setStage('Готово');
+      // Обновляем общий список документов: новый документ появится в Истории/реестрах проекта.
+      reloadDocuments().catch(() => {});
 
-      // Параллельно подгружаем граф знаний и таблицу абзацев
-      const [graphResp, paragraphsResp] = await Promise.all([
-        graphApi.get(response.job_id).catch(() => null),
-        paragraphsApi.get(response.job_id).catch(() => [] as ParagraphRow[]),
+      // Финальные данные грузим по job_id / document_id
+      const [graphResp, paragraphsResp, reqs] = await Promise.all([
+        graphApi.get(jobId).catch(() => null),
+        paragraphsApi.get(jobId).catch(() => [] as ParagraphRow[]),
+        requirementsApi.get(jobId).catch(() => [] as ExtractedRequirement[]),
       ]);
+      setResult({
+        job_id: jobId,
+        document_id: documentId,
+        status: 'completed',
+        total_requirements: reqs.length,
+        message: '',
+      } as AnalysisResponse);
+      setReportContent('');
       setGraph(graphResp);
       setParagraphs(paragraphsResp);
 
       // Search for similar requirements in RAG
-      const currentDocId = response.document_id;
+      const currentDocId = documentId;
       const dedup = new Map<string, RagSearchResult>();
       for (const row of paragraphsResp) {
         for (const sim of row.similar_requirements ?? []) {
@@ -122,7 +175,7 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
         Array.from(dedup.values()).sort((a, b) => b.similarity_score - a.similarity_score),
       );
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Ошибка загрузки файла');
+      setError(err.response?.data?.detail || err.message || 'Ошибка загрузки файла');
     } finally {
       setUploading(false);
     }
@@ -177,6 +230,28 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
         </Box>
 
         {file && !result && (
+          <FormControl fullWidth size="small" sx={{ mt: 2 }} disabled={uploading}>
+            <InputLabel id="upload-project-select">Проект (необязательно)</InputLabel>
+            <Select
+              labelId="upload-project-select"
+              label="Проект (необязательно)"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value as string)}
+              displayEmpty
+            >
+              <MenuItem value="">
+                <em>— без проекта —</em>
+              </MenuItem>
+              {projects.map((p) => (
+                <MenuItem key={p.project_id} value={p.project_id}>
+                  {p.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+
+        {file && !result && (
           <Button
             variant="contained"
             color="primary"
@@ -193,10 +268,7 @@ export function FileUploadPage({ userRole }: FileUploadPageProps) {
 
         {uploading && (
           <Box sx={{ mt: 2 }}>
-            <LinearProgress variant="determinate" value={progress} />
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-              Обработка документа... {progress}%
-            </Typography>
+            <ProcessingProgress stage={stage} percent={progress} startedAt={startedAt} />
           </Box>
         )}
 

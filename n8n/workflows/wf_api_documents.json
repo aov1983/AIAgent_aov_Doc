@@ -1,0 +1,2769 @@
+{
+  "updatedAt": "2026-05-28T08:02:03.391Z",
+  "createdAt": "2026-05-28T07:10:15.190Z",
+  "id": "wf-api-documents",
+  "name": "wf_api_documents",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*",
+          "rawBody": false
+        }
+      },
+      "id": "upload--node-webhook",
+      "name": "[upload] Webhook: POST /upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2192,
+        0
+      ],
+      "webhookId": "docs-upload"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "upload--node-auth",
+      "name": "[upload] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1952,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "upload--node-if-auth",
+      "name": "[upload] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1744,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\n// Принимаем {raw, filename} от адаптеров (Read Text Binary / Extract Docling MD). Парсим markdown-структуру, генерим UUID.\nconst uuidv4 = () =>\n  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {\n    const r = (Math.random() * 16) | 0;\n    const v = c === 'x' ? r : (r & 0x3) | 0x8;\n    return v.toString(16);\n  });\nconst src = $input.first().json;\nconst _hookBody = $('[upload] Webhook: POST /upload').first().json.body || {};\nconst filename = (src.filename || 'document.txt').normalize('NFC');\n// Postgres jsonb отвергает \\u0000 и плохо переваривает прочие управляющие — Docling/бинарь могут принести.\nlet raw = (src.raw || '').normalize('NFC').replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]/g, '');\n\nconst lines = raw.split(/\\r?\\n/);\n\n// Карта заголовков из ОГЛАВЛЕНИЯ: строки «<номер>. <текст>\\t<страница>». Уровень — глубина номера.\nconst _tocRe = /^(\\d+(?:\\.\\d+)*)\\.?\\s+(.+?)\\s*\\t\\s*\\d+\\s*$/;\nconst _norm = (s) => s.replace(/\\*\\*/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();\nconst _headMap = new Map();\nfor (const line of lines) {\n  const m = line.match(_tocRe);\n  if (m) {\n    const _title = m[2].replace(/\\*\\*/g, '').trim();\n    const _level = m[1].split('.').length;\n    const _key = _norm(_title);\n    if (_key && _key.length >= 3 && !_headMap.has(_key))\n      _headMap.set(_key, { level: _level, title: _title });\n  }\n}\n\nconst chapters = [];\nlet ch = null,\n  sec = null,\n  buf = [];\nconst flush = () => {\n  const t = buf.join(' ').trim();\n  buf = [];\n  if (!t) return;\n  if (!ch) ch = { title: 'Введение', sections: [] };\n  if (!sec) {\n    sec = { title: 'Общие положения', paragraphs: [] };\n    ch.sections.push(sec);\n  }\n  sec.paragraphs.push(t);\n};\n// Строка самого оглавления (заканчивается табом+номером страницы) — мусор, в абзацы не идёт.\nconst _tocLineRe = /\\t\\s*\\d+\\s*$/;\n// Уровень заголовка НЕ по числу '#' (Docling даёт ## и для разделов, и для подразделов, без # —\n// тогда главы не выделялись), а по: 1) номеру в тексте (## 1 Общие сведения → ур.1; 1.1 → ур.2);\n// 2) карте оглавления (по тексту без номера); 3) запасной markdown-глубине (#=глава, иначе секция).\nconst _numLevel = (s) => {\n  const m = String(s).match(/^(\\d+(?:\\.\\d+)*)\\.?(?:\\s|$)/);\n  return m ? m[1].split('.').length : 0;\n};\nconst _stripNum = (s) =>\n  String(s)\n    .replace(/^(\\d+(?:\\.\\d+)*)\\.?\\s+/, '')\n    .trim();\nconst _usedHead = new Set();\nfor (const line of lines) {\n  const _t = line.trim();\n  let _headText = null,\n    _fromToc = false;\n  if (/^#{1,6}\\s+/.test(line)) {\n    _headText = line.replace(/^#{1,6}\\s+/, '').trim();\n  } else if (_tocLineRe.test(line)) {\n    flush();\n    continue;\n  } else if (_t && _headMap.has(_norm(_t)) && !_usedHead.has(_norm(_t))) {\n    _headText = _t;\n    _fromToc = true;\n  }\n  if (_headText !== null && _headText !== '') {\n    let _level = _numLevel(_headText);\n    if (!_level) {\n      const _k = _norm(_stripNum(_headText));\n      if (_headMap.has(_k)) _level = _headMap.get(_k).level;\n    }\n    if (!_level) _level = /^#\\s+/.test(line) ? 1 : 2;\n    const _title = _stripNum(_headText) || _headText;\n    if (_fromToc) _usedHead.add(_norm(_t));\n    flush();\n    if (_level <= 1) {\n      if (ch) chapters.push(ch);\n      ch = { title: _title, sections: [] };\n      sec = null;\n    } else {\n      if (!ch) ch = { title: 'Введение', sections: [] };\n      sec = { title: _title, paragraphs: [] };\n      ch.sections.push(sec);\n    }\n    continue;\n  }\n  if (!_t) {\n    flush();\n    continue;\n  }\n  buf.push(_t);\n}\nflush();\nif (ch) chapters.push(ch);\nif (!chapters.length)\n  chapters.push({\n    title: filename,\n    sections: [{ title: 'Содержимое', paragraphs: [raw.slice(0, 4000) || '(empty)'] }],\n  });\n\nconst llmText = chapters\n  .map((c, ci) =>\n    c.sections\n      .map(\n        (s, si) =>\n          '## ' +\n          c.title +\n          ' → ' +\n          s.title +\n          '\\n' +\n          s.paragraphs.map((p, pi) => '[p' + ci + '.' + si + '.' + pi + '] ' + p).join('\\n'),\n      )\n      .join('\\n\\n'),\n  )\n  .join('\\n\\n')\n  .slice(0, 12000);\n\nlet _pendingModel = 'qwen3:8b';\ntry {\n  const _lc = ($('[upload] Docling Config').first() && $('[upload] Docling Config').first().json) || {};\n  const _pp = _lc ? String(_lc.provider || '').toLowerCase() : '';\n  if (_lc && _lc.model) _pendingModel = String(_lc.model);\n  else if (_pp === 'claude') _pendingModel = 'claude-haiku-4-5';\n  else if (_pp === 'develonica') _pendingModel = String('dvl-analyst');\n  else if (_pp === 'lmstudio') _pendingModel = String('google/gemma-4-12b');\n} catch (_) {}\nconst _baseName = filename\n  .replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i, '')\n  .replace(/\\.[^.]+$/, '');\nreturn [\n  {\n    json: {\n      document_id: _hookBody.document_id || uuidv4(),\n      pending_model: _pendingModel,\n      job_id: _hookBody.job_id || uuidv4(),\n      project_id: _hookBody.project_id || '',\n      title:\n        !chapters[0] || chapters[0].title === 'Введение'\n          ? _baseName\n          : chapters[0].title || _baseName,\n      filename,\n      chapters,\n      llm_text: llmText,\n      uploaded_by: $('[upload] Auth').first().json._username,\n    },\n  },\n];"
+      },
+      "id": "upload--node-parse",
+      "name": "[upload] Parse + Generate IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "config"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "key",
+              "condition": "eq",
+              "keyValue": "llm_extraction"
+            }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "upload--node-docling-config",
+      "name": "[upload] Docling Config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1664,
+        -16
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Auth (executeWorkflow) сбрасывает binary с item. Восстанавливаем его из исходного webhook'а\n// и одновременно вычисляем _mime_kind, чтобы Route by Mime ниже не дублировал эту логику.\nconst bin = $('[upload] Webhook: POST /upload').first().binary || {};\nconst first = Object.values(bin)[0] || {};\nconst mt = (first.mimeType || '').toLowerCase();\nconst fn = (first.fileName || '').toLowerCase();\nconst isText =\n  mt.startsWith('text/') || mt === 'application/json' || /\\.(txt|md|markdown)$/i.test(fn);\n// Адрес Docling — из config Data Table (нода [upload] Docling Config, колонка docling_url),\n// в обход $env И без self-HTTP: на «чужих» стендах task-runner — отдельный контейнер, сеть до\n// n8n не доходит, а dataTable читается нативно. docling_url можно дать полным URL или только\n// хостом — путь /v1/convert/file допишется. Пусто/нет строки → localhost-дефолт.\nlet _doclingUrl = 'http://localhost:5001/v1/convert/file';\ntry {\n  const _cfg = ($('[upload] Docling Config').first() && $('[upload] Docling Config').first().json) || {};\n  let _u = _cfg.docling_url ? String(_cfg.docling_url).trim() : '';\n  if (_u) {\n    _u = _u.replace(/\\/+$/, '');\n    if (!/\\/convert(\\/|$)/.test(_u)) _u = _u + '/v1/convert/file';\n    _doclingUrl = _u;\n  }\n} catch (_) {}\nreturn [\n  {\n    json: Object.assign({}, $('[upload] Auth').first().json, { _mime_kind: isText ? 'text' : 'binary', _docling_url: _doclingUrl }),\n    binary: bin,\n  },\n];"
+      },
+      "id": "upload--node-restore-binary",
+      "name": "[upload] Restore Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "is-text",
+              "leftValue": "={{ $json._mime_kind }}",
+              "rightValue": "text",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "upload--node-route-mime",
+      "name": "[upload] Route by Mime",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -928,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Текстовая ветка: webhook отдал text/* (md/txt/markdown). Читаем бинарь через helper\n// getBinaryDataBuffer — корректно при ЛЮБОМ N8N_DEFAULT_BINARY_DATA_MODE. В filesystem-режиме\n// binary.data — это ССЫЛКА (\"filesystem-v2:workflows/.../bin\"), а не base64, поэтому старый\n// Buffer.from(binary.data,'base64') декодировал строку-ссылку → 9 байт мусора (\"~)^...\") →\n// extract возвращал []. helper читает фактические байты по ссылке (подтверждено diag: len 5759,\n// head \"## Техническое задание…\"). Фолбэк на base64 НЕ ставим — он только маскирует мусором.\n// binary доходит сюда из Restore Binary (Encode File и Status: Convert проносят item+binary).\nconst item = $input.first();\nconst bmap = (item && item.binary) || {};\nconst propName = Object.keys(bmap)[0];\nlet raw = '', filename = 'document.txt', mimeType = 'text/plain';\nif (propName) {\n  const meta = bmap[propName] || {};\n  filename = meta.fileName || filename;\n  mimeType = meta.mimeType || mimeType;\n  const buf = await this.helpers.getBinaryDataBuffer(0, propName);\n  raw = buf.toString('utf-8');\n}\nreturn [{ json: { raw, filename, mimeType } }];"
+      },
+      "id": "upload--node-read-text",
+      "name": "[upload] Read Text Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('[upload] Restore Binary').first().json._docling_url || 'http://localhost:5001/v1/convert/file' }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "={{ Object.keys($binary)[0] }}"
+            },
+            {
+              "name": "to_formats",
+              "value": "md"
+            },
+            {
+              "name": "do_ocr",
+              "value": "true"
+            },
+            {
+              "name": "do_table_structure",
+              "value": "true"
+            },
+            {
+              "name": "table_mode",
+              "value": "accurate"
+            },
+            {
+              "name": "image_export_mode",
+              "value": "placeholder"
+            },
+            {
+              "name": "include_images",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "upload--node-docling",
+      "name": "[upload] Docling Convert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -688,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Бинарная ветка: Docling вернул { document: { md_content, filename } } (см. n8n_ivan/AG-DC-AR-01_v1.3).\n// Некоторые сборки Docling кладут md в .md/.text/.content — поддерживаем все варианты.\nconst out = $input.first().json || {};\nconst doc = out.document || out;\nconst raw = doc.md_content || doc.md || doc.text || doc.content || '';\nconst binaryMap = $('[upload] Webhook: POST /upload').first().binary || {};\nconst firstBin = Object.values(binaryMap)[0] || {};\nconst filename = doc.filename || firstBin.fileName || 'document';\nreturn [{ json: { raw, filename, mimeType: firstBin.mimeType || 'application/octet-stream' } }];"
+      },
+      "id": "upload--node-extract-docling",
+      "name": "[upload] Extract Docling MD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge LLM output into chapters[].sections[].atomic_requirements[], classify executors, build graph + report, prepare SQL strings.\nconst src = JSON.parse(JSON.stringify($('[upload] Parse + Generate IDs').first().json));\nconst chapters = src.chapters;\nfor (const ch of chapters) for (const s of ch.sections) s.atomic_requirements = [];\n\n// Parse LLM. chainLlm возвращает { text: '...' }; httpRequest к Ollama раньше — { message: { content } }. Поддерживаем оба.\nlet llmReqs = null;\ntry {\n  const llm = ($('[upload] Merge Chunks').first().json || {}).merged_decompose;\n  // chainLlm v1.9 кладёт распарсенный JSON прямо в .json (без text/output-обёртки);\n  // fallback на старые формы (text/output/message.content) — для совместимости.\n  let parsed = null;\n  if (llm && Array.isArray(llm.requirements)) parsed = llm;\n  else {\n    const content =\n      (llm && (llm.text || llm.output)) || (llm && llm.message && llm.message.content);\n    if (content) parsed = typeof content === 'string' ? JSON.parse(content) : content;\n  }\n  if (parsed && Array.isArray(parsed.requirements)) llmReqs = parsed.requirements;\n} catch (e) {}\n// >>> extracted_requirements parse\n// Второй LLM-вызов: документ-уровневый список ФТ/НФТ.\nconst salvageReqs = (s) => {\n  // Вытащить максимум ПОЛНЫХ объектов из (возможно оборванного) JSON: LLM иногда\n  // дегенерирует и рвёт массив extracted_requirements на полуслове.\n  const out = [];\n  const key = s.indexOf('extracted_requirements');\n  let i = key >= 0 ? s.indexOf('[', key) : s.indexOf('[');\n  if (i < 0) i = 0;\n  let depth = 0,\n    start = -1,\n    inStr = false,\n    esc = false;\n  for (let k = i; k < s.length; k++) {\n    const c = s[k];\n    if (inStr) {\n      if (esc) esc = false;\n      else if (c === '\\\\') esc = true;\n      else if (c === '\"') inStr = false;\n      continue;\n    }\n    if (c === '\"') {\n      inStr = true;\n      continue;\n    }\n    if (c === '{') {\n      if (depth === 0) start = k;\n      depth++;\n    } else if (c === '}') {\n      if (depth > 0) {\n        depth--;\n        if (depth === 0 && start >= 0) {\n          try {\n            out.push(JSON.parse(s.slice(start, k + 1)));\n          } catch (_) {}\n          start = -1;\n        }\n      }\n    }\n  }\n  return out;\n};\nlet extractedReqs = [];\ntry {\n  const llm2 = ($('[upload] Merge Chunks').first().json || {}).merged_extracted;\n  let parsed2 = null;\n  if (llm2 && Array.isArray(llm2.extracted_requirements)) parsed2 = llm2;\n  else {\n    const content2 =\n      (llm2 && (llm2.text || llm2.output)) || (llm2 && llm2.message && llm2.message.content);\n    if (content2) {\n      const s2 = typeof content2 === 'string' ? content2 : JSON.stringify(content2);\n      try {\n        parsed2 = JSON.parse(s2);\n      } catch (e2) {\n        parsed2 = { extracted_requirements: salvageReqs(s2) };\n      }\n    }\n  }\n  {\n    if (parsed2 && Array.isArray(parsed2.extracted_requirements)) {\n      extractedReqs = parsed2.extracted_requirements.map((r) => ({\n        type: r.type === 'ФТ' || r.type === 'НФТ' ? r.type : 'unknown',\n        title: r.title || '',\n        statement: r.statement || '',\n        fact: r.fact || '',\n        risk: r.risk || 'unknown',\n        criticality: r.criticality || 'unknown',\n        recommendation: r.recommendation || 'unknown',\n      }));\n    }\n  }\n} catch (e) {}\n\n// Fallback: LLM Requirements (chainLlm) ненадёжен на больших docs — qwen3 рвёт JSON\n// дегенерацией (\\n-цикл), chainLlm проглатывает сырьё → extractedReqs пуст. Тогда строим\n// Реестр из стабильных атомарных требований Decompose (по абзацу), без ФТ/НФТ-классификации.\nif (!extractedReqs.length && Array.isArray(llmReqs)) {\n  extractedReqs = llmReqs\n    .filter((r) => r && (r.fact || r.recommendation))\n    .map((r) => ({\n      type: 'unknown',\n      title: String(r.fact || '').slice(0, 80),\n      statement: String(r.fact || ''),\n      fact: String(r.fact || ''),\n      risk: r.risk || 'unknown',\n      criticality: r.criticality || 'unknown',\n    }));\n}\n\n// >>> rule-based коррекция ФТ/НФТ поверх LLM-метки. qwen3:8b систематически метит\n// функциональные требования как НФТ; корректор асимметричен и консервативен\n// (валидирован на Книгах 1/2.2/2.6: НФТ→ФТ — доминирующая правка, ФТ→НФТ — только явные\n// атрибуты качества). Не трогает type вне {ФТ,НФТ}. Источник правды — n8n/sql (см. reclassify).\nconst _FT_VERBS = [\n  'должна предоставлять возможность',\n  'должна предоставить возможность',\n  'предоставляться возможность',\n  'возможность',\n  'обеспечивать возможность',\n  'обеспечить возможность',\n  'формир',\n  'формиров',\n  'создан',\n  'создав',\n  'создать',\n  'созда',\n  'редактир',\n  'загруж',\n  'загруз',\n  'выгруж',\n  'отображ',\n  'отобража',\n  'показыва',\n  'проверк',\n  'проверя',\n  'проверить',\n  'направл',\n  'генерир',\n  'генерац',\n  'сгенерир',\n  'прекрат',\n  'прекращ',\n  'рассчит',\n  'расчёт',\n  'расчет',\n  'исключ',\n  'обновл',\n  'обновить',\n  'подпис',\n  'уведомл',\n  'нотификац',\n  'учёт',\n  'учет',\n  'поиск',\n  'искать',\n  'фильтр',\n  'экспорт',\n  'импорт',\n  'упаков',\n  'добав',\n  'удал',\n  'просмотр',\n  'печать',\n  'вывести',\n  'вывод',\n  'заполн',\n  'указать',\n  'выбор',\n  'выбрать',\n  'связать',\n  'интеграц',\n  'синхрониз',\n  'отслежив',\n  'направлять',\n  'хранить',\n  'хранен',\n  'регистрир',\n  'согласован',\n  'утвержд',\n];\nconst _STRONG_NFT = [\n  'время отклика',\n  'производительн',\n  'быстродейств',\n  'пропускн способн',\n  'нагрузочн',\n  'под нагрузк',\n  'пиковой нагрузк',\n  'одновременно работа',\n  'одновременных польз',\n  'одновременную работу',\n  'отказоустойч',\n  'доступность систем',\n  'доступность сервис',\n  'высокая доступн',\n  'коэффициент доступн',\n  'время простоя',\n  'наработк на отказ',\n  'круглосуточн',\n  '24/7',\n  'масштабир',\n  'шифрован',\n  'удобств использов',\n  'интуитивн',\n  'юзабилити',\n  'эргономи',\n  'локализац',\n  'язык интерфейс',\n  'объём хранен',\n  'объем хранен',\n  'резервн копир',\n  'резервное копир',\n  'резервный цод',\n  'резервн узел',\n  'аварийн переключ',\n  'failover',\n  'rpo',\n  'rto',\n  'восстановления из резервн',\n  'восстановлен из резервн',\n  'переключение на резерв',\n];\nconst _WEAK_NFT = [\n  'формат',\n  'соответств',\n  'совместим',\n  'браузер',\n  'операционн систем',\n  'гост',\n  'стандарт',\n  'требованиям приказа',\n  'требованиям закон',\n  'регламент',\n  'нормативн',\n  'в виде файла',\n  'docx',\n  'odt',\n  'pdf',\n];\nconst _hasKw = (t, a) => a.some((k) => t.includes(k));\nconst reclassifyType = (r) => {\n  const llm = r.type;\n  const t = [r.title || '', r.statement || '', r.fact || ''].join(' ').toLowerCase();\n  const fT = _hasKw(t, _FT_VERBS),\n    sN = _hasKw(t, _STRONG_NFT),\n    wN = _hasKw(t, _WEAK_NFT);\n  if (llm === 'НФТ') return fT && !sN && !wN ? 'ФТ' : 'НФТ';\n  // Нет надёжной ФТ/НФТ-метки (fallback по decompose, когда extract-вызов вернул пусто) —\n  // классифицируем С НУЛЯ той же логикой, что и метку ФТ: по умолчанию ФТ, НФТ — только при\n  // сильном атрибуте качества без функц. глагола. Реестр больше не пуст при сбое extract.\n  return sN && !fT ? 'НФТ' : 'ФТ';\n};\nfor (const _r of extractedReqs) _r.type = reclassifyType(_r);\n// <<< rule-based коррекция\n\nconst realReqCount = extractedReqs.length;\nlet _coverageWarn = [];\ntry {\n  const _cov = ($('[upload] Merge Chunks').first().json || {})._coverage;\n  if (_cov && _cov.total_paragraphs > 0 && _cov.covered_paragraphs < _cov.total_paragraphs * 0.1)\n    _coverageWarn.push(\n      'Требования по абзацам извлечены лишь из ' +\n        _cov.covered_paragraphs +\n        ' из ' +\n        _cov.total_paragraphs +\n        ' абзацев — проверьте качество декомпозиции',\n    );\n} catch (_) {}\n\nconst placeReq = (ci, si, pi, req) => {\n  const ch = chapters[ci];\n  if (!ch) return;\n  const sec = ch.sections[si];\n  if (!sec) return;\n  sec.atomic_requirements.push({\n    fact: req.fact || '',\n    risk: req.risk || 'unknown',\n    criticality: req.criticality || 'unknown',\n    recommendation: req.recommendation || 'unknown',\n    executors: [],\n    tracing: { chapter: ch.title, section: sec.title, paragraph_index: pi },\n    similar_requirements: [],\n    architectural_solutions: [],\n    comments: [],\n  });\n};\n\n// Раскладываем LLM-requirements по абзацам в порядке появления — НЕ доверяя\n// LLM-вым индексам chapter_idx/section_idx/paragraph_idx (qwen3:8b часто путает).\n// i-й requirement → i-й абзац в документе. Если LLM прислал меньше требований чем\n// абзацев — оставшиеся заполняем заглушкой из текста абзаца.\nconst flatReqs = llmReqs && llmReqs.length ? llmReqs : [];\nlet flatIdx = 0;\nfor (let ci = 0; ci < chapters.length; ci++) {\n  for (let si = 0; si < chapters[ci].sections.length; si++) {\n    const sec = chapters[ci].sections[si];\n    for (let pi = 0; pi < sec.paragraphs.length; pi++) {\n      const req = flatReqs[flatIdx++];\n      if (req && (req.fact || '').trim()) {\n        placeReq(ci, si, pi, req);\n      } else {\n        placeReq(ci, si, pi, {\n          fact: sec.paragraphs[pi].slice(0, 200),\n          risk: 'unknown',\n          criticality: 'unknown',\n          recommendation: 'unknown',\n        });\n      }\n    }\n  }\n}\n\n// Classify executors (rule-based, портированно из agent/classifier.py).\nconst KW = {\n  Аналитик: [\n    'требования',\n    'анализ',\n    'бизнес-процесс',\n    'use case',\n    'сценарий',\n    'спецификация',\n    'критерии приемки',\n  ],\n  Архитектор: [\n    'архитектура',\n    'компонент',\n    'микросервис',\n    'интеграция',\n    'api',\n    'масштабируемость',\n    'отказоустойчивость',\n  ],\n  Разработчик: [\n    'код',\n    'разработка',\n    'реализация',\n    'алгоритм',\n    'функция',\n    'класс',\n    'модуль',\n    'рефакторинг',\n  ],\n  Тестировщик: [\n    'тест',\n    'тестирование',\n    'qa',\n    'валидация',\n    'верификация',\n    'баг',\n    'test case',\n    'покрытие тестами',\n  ],\n  DevOps: [\n    'devops',\n    'ci/cd',\n    'pipeline',\n    'деплой',\n    'docker',\n    'kubernetes',\n    'мониторинг',\n    'логирование',\n    'terraform',\n    'helm',\n  ],\n};\nconst classify = (req) => {\n  const full = [req.fact, req.risk, req.recommendation].join(' ').toLowerCase();\n  const out = new Set();\n  for (const [exec, kws] of Object.entries(KW))\n    for (const k of kws)\n      if (full.includes(k)) {\n        out.add(exec);\n        break;\n      }\n  if (!out.size) {\n    if (/что|как|почему/.test(full)) out.add('Аналитик');\n    else if (/должен|необходимо|требуется/.test(full)) out.add('Архитектор');\n    else out.add('Аналитик');\n  }\n  return [...out];\n};\nfor (const ch of chapters)\n  for (const s of ch.sections) for (const r of s.atomic_requirements) r.executors = classify(r);\n\n// Hash — вынесен наверх, потому что нужен ДВАЖДЫ: при сборе RAG payload'ов (paragraph_id для будущих similar_to-рёбер) и при построении графа.\nconst hash = (s) => {\n  let h = 5381;\n  const str = String(s);\n  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;\n  return h.toString(36).padStart(7, '0').slice(0, 12);\n};\n\n// RAG chunks: формат '{fact}. Риск: {risk}. Рекомендация: {recommendation}.' — совместим с antisamomatch (см. core.py:556-586).\n// paragraph_id записываем в payload чанка — он совпадает с id paragraph-узла графа (см. ниже), и [upload] Enrich Graph использует его чтобы связать local↔external абзацы через similar_to.\n// Мусорный абзац: табличная разметка markdown, строка-разделитель, почти без букв или слишком\n// короткий. Реальные требования это НЕ затрагивает (фильтруем только заглушки, см. ниже).\nconst _isJunkPara = (p) => {\n  const s = String(p || '')\n    .replace(/\\*\\*/g, '')\n    .trim();\n  if (s.length < 15) return true;\n  if (/^[|+\\-\\s]+$/.test(s)) return true;\n  if ((s.match(/\\|/g) || []).length >= 3) return true;\n  if ((s.match(/[A-Za-zА-Яа-яЁё]/g) || []).length < 8) return true;\n  return false;\n};\nconst _rag_texts = [];\nconst _rag_payloads = [];\nfor (let ci = 0; ci < chapters.length; ci++) {\n  const _ch = chapters[ci];\n  for (let si = 0; si < _ch.sections.length; si++) {\n    const _s = _ch.sections[si];\n    for (const r of _s.atomic_requirements) {\n      const _pi = (r.tracing && r.tracing.paragraph_index) || 0;\n      const _p = (_s.paragraphs && _s.paragraphs[_pi]) || '';\n      const _pId = 'par_' + hash(_p.slice(0, 50)) + '_' + ci + '_' + si + '_' + _pi;\n      const _isStub = String(r.risk) === 'unknown' && String(r.recommendation) === 'unknown';\n      // Заглушку по мусорному абзацу (TOC/таблица/разделитель) в Qdrant не пишем.\n      if (_isStub && _isJunkPara(_p)) continue;\n      // Заглушка → чистый текст абзаца (без «Риск: unknown…»); реальное требование → полный формат.\n      const _text = _isStub\n        ? String(r.fact || '').trim()\n        : r.fact + '. Риск: ' + r.risk + '. Рекомендация: ' + r.recommendation + '.';\n      if (!_text) continue;\n      _rag_texts.push(_text);\n      const _flat = {\n        document_id: src.document_id,\n        document_title: src.title,\n        chapter_title: _ch.title,\n        section_title: _s.title,\n        content: _text,\n        requirement_type: 'atomic',\n        executors: r.executors || [],\n        risk_level: r.criticality,\n        tracing: r.tracing || {},\n        paragraph_id: _pId,\n      };\n      // metadata-mirror для нативного @langchain/qdrant: он читает только payload.content и payload.metadata\n      // (см. libs/langchain-qdrant/src/vectorstores). Плоские поля оставляем для Enrich Graph и HTTP-нод.\n      const { content: _c, ..._meta } = _flat;\n      _rag_payloads.push(Object.assign({}, _flat, { metadata: _meta }));\n    }\n  }\n}\n\n// Build graph + paragraphs + report.\nconst nodes = [],\n  edges = [],\n  paragraphs = [];\nlet totalReqs = 0;\nconst docNodeId = 'doc_' + hash(src.title);\nnodes.push({ id: docNodeId, type: 'document', label: src.title, data: { filename: src.filename } });\nfor (let ci = 0; ci < chapters.length; ci++) {\n  const ch = chapters[ci];\n  const chId = 'chap_' + hash(ch.title) + '_' + ci;\n  nodes.push({ id: chId, type: 'chapter', label: ch.title, data: { idx: ci } });\n  edges.push({\n    id: 'e_' + docNodeId + '_' + chId,\n    source: docNodeId,\n    target: chId,\n    type: 'contains',\n  });\n  for (let si = 0; si < ch.sections.length; si++) {\n    const sec = ch.sections[si];\n    const secId = 'sec_' + hash(sec.title) + '_' + ci + '_' + si;\n    nodes.push({ id: secId, type: 'section', label: sec.title, data: { idx: si } });\n    edges.push({ id: 'e_' + chId + '_' + secId, source: chId, target: secId, type: 'contains' });\n    for (let pi = 0; pi < sec.paragraphs.length; pi++) {\n      const p = sec.paragraphs[pi];\n      const pId = 'par_' + hash(p.slice(0, 50)) + '_' + ci + '_' + si + '_' + pi;\n      nodes.push({ id: pId, type: 'paragraph', label: p.slice(0, 80), data: { text: p, idx: pi } });\n      edges.push({ id: 'e_' + secId + '_' + pId, source: secId, target: pId, type: 'contains' });\n      const reqs = sec.atomic_requirements.filter(\n        (r) => (r.tracing && r.tracing.paragraph_index) === pi,\n      );\n      totalReqs += reqs.length;\n      paragraphs.push({\n        paragraph_index: paragraphs.length,\n        chapter: ch.title,\n        section: sec.title,\n        text: p,\n        requirements: reqs,\n      });\n      // Бэкфил paragraph_global_index в _rag_payloads — Enrich Graph ниже прицепит similar_requirements к конкретному paragraph по этому индексу.\n      const _gpi = paragraphs.length - 1;\n      for (const _rp of _rag_payloads) {\n        if (_rp.paragraph_id === pId && _rp.paragraph_global_index === undefined) {\n          _rp.paragraph_global_index = _gpi;\n          if (_rp.metadata) _rp.metadata.paragraph_global_index = _gpi;\n        }\n      }\n    }\n  }\n}\nconst stats = {\n  total_nodes: nodes.length,\n  total_edges: edges.length,\n  paragraphs: nodes.filter((n) => n.type === 'paragraph').length,\n  chunks: 0,\n  intersections: 0,\n  external_docs: 0,\n};\n\nconst lines = [];\nlines.push('# Отчёт по анализу документа: ' + src.title + '\\n');\nlines.push('**Файл:** ' + src.filename + '\\n');\nlines.push('**Всего глав:** ' + chapters.length + '\\n');\nlines.push('**Всего требований (ФТ/НФТ):** ' + realReqCount + '\\n');\nlines.push('---\\n');\nfor (let ci = 0; ci < chapters.length; ci++) {\n  const ch = chapters[ci];\n  lines.push('# ' + (ci + 1) + '. ' + ch.title + '\\n');\n  for (let si = 0; si < ch.sections.length; si++) {\n    const s = ch.sections[si];\n    lines.push('## ' + (ci + 1) + '.' + (si + 1) + ' ' + s.title + '\\n');\n    for (const r of s.atomic_requirements) {\n      const p = ((r.tracing && r.tracing.paragraph_index) || 0) + 1;\n      lines.push('**Абзац #' + p + '**\\n');\n      lines.push('* Факт: ' + r.fact);\n      lines.push('* Риск: ' + r.risk);\n      lines.push('* Критичность: ' + r.criticality);\n      lines.push('* Рекомендация: ' + r.recommendation);\n      lines.push('* Исполнители: ' + (r.executors || []).join(', '));\n      lines.push('');\n    }\n  }\n}\nconst report = lines.join('\\n');\nconst graph = { nodes, edges, stats };\ngraph.llm = ($('[upload] Merge Chunks').first().json || {})._llm_usage || null;\nconst payload = { graph, paragraphs, extracted_requirements: extractedReqs };\nconst now = new Date().toISOString();\n\n// Статус документа: при недообработанных фрагментах (LLM не ответил даже после retry) — 'partial',\n// чтобы История показала проблему и кнопку «Возобновить», а не ложное «Готово». Возобновление\n// добивает недостающие чанки (чекпойнт job_chunks), и при failed=0 статус станет 'completed'.\nlet _chunkStats = null;\ntry {\n  _chunkStats = ($('[upload] Merge Chunks').first().json || {})._chunk_stats || null;\n} catch (_) {}\nconst _failedChunks = (_chunkStats && Number(_chunkStats.failed)) || 0;\nlet _wasCancelled = false;\ntry {\n  _wasCancelled = !!($('[upload] Merge Chunks').first().json || {})._cancelled;\n} catch (_) {}\nconst _docStatus = _failedChunks > 0 ? 'partial' : 'completed';\nconst _errList = [];\nif (_failedChunks > 0) {\n  if (_wasCancelled)\n    _errList.push(\n      'Обработка отменена пользователем: готово ' +\n        (_chunkStats.total - _failedChunks) +\n        ' из ' +\n        _chunkStats.total +\n        ' фрагментов. Возобновите, чтобы добрать остальные.',\n    );\n  else\n    _errList.push(\n      'Не обработано ' +\n        _failedChunks +\n        ' из ' +\n        _chunkStats.total +\n        ' фрагментов: LLM не ответил после повторных попыток. Возобновите обработку, чтобы добрать недостающие.',\n    );\n}\n\n// Прикладные данные ушли из Postgres в n8n Data Tables. Заранее лепим три row-объекта под колонки\n// users/uploads/jobs/graphs (см. n8n/sql/data_tables_bootstrap.mjs). JSON-поля сериализуем в строку —\n// в Data Tables нет JSONB-типа, есть только string/number/boolean/date.\nconst _upload_row = {\n  // `id` зарезервировано Data Tables (auto-number) — наш UUID документа храним в upload_id.\n  upload_id: src.document_id,\n  filename: src.filename,\n  storage_key: 'n8n://' + src.document_id,\n  uploaded_by: src.uploaded_by,\n  uploaded_at: now,\n  status: 'completed',\n};\n\nconst _job_row = {\n  job_id: src.job_id,\n  document_id: src.document_id,\n  title: src.title,\n  report: report,\n  total_requirements: realReqCount,\n  errors_json: JSON.stringify(_errList),\n  warnings_json: JSON.stringify(_coverageWarn),\n  payload_json: JSON.stringify(payload),\n  created_at: now,\n};\n\nconst _graph_row = {\n  document_id: src.document_id,\n  title: src.title,\n  filename: src.filename,\n  total_requirements: realReqCount,\n  graph_json: JSON.stringify(graph),\n  paragraphs_json: JSON.stringify(paragraphs),\n  saved_at: now,\n  status: _docStatus,\n  job_id: src.job_id,\n  model: ($('[upload] Merge Chunks').first().json || {})._llm_model || '',\n};\n\nreturn [\n  {\n    json: {\n      document_id: src.document_id,\n      job_id: src.job_id,\n      title: src.title,\n      filename: src.filename,\n      total_requirements: realReqCount,\n      _upload_row: _upload_row,\n      _job_row: _job_row,\n      _graph_row: _graph_row,\n      _rag_texts: _rag_texts,\n      _rag_payloads: _rag_payloads,\n    },\n  },\n];"
+      },
+      "id": "upload--node-build-all",
+      "name": "[upload] Build Everything",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        -128
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "uploads"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "upload_id",
+              "keyValue": "={{ $json._upload_row.upload_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "upload_id": "={{ $json._upload_row.upload_id }}",
+            "filename": "={{ $json._upload_row.filename }}",
+            "storage_key": "={{ $json._upload_row.storage_key }}",
+            "uploaded_by": "={{ $json._upload_row.uploaded_by }}",
+            "uploaded_at": "={{ $json._upload_row.uploaded_at }}",
+            "status": "={{ $json._upload_row.status }}"
+          },
+          "matchingColumns": [
+            "upload_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "upload--node-persist-upload",
+      "name": "[upload] Persist Upload",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "jobs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $json._job_row.job_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "job_id": "={{ $json._job_row.job_id }}",
+            "document_id": "={{ $json._job_row.document_id }}",
+            "title": "={{ $json._job_row.title }}",
+            "report": "={{ $json._job_row.report }}",
+            "total_requirements": "={{ $json._job_row.total_requirements }}",
+            "errors_json": "={{ $json._job_row.errors_json }}",
+            "warnings_json": "={{ $json._job_row.warnings_json }}",
+            "payload_json": "={{ $json._job_row.payload_json }}",
+            "created_at": "={{ $json._job_row.created_at }}"
+          },
+          "matchingColumns": [
+            "job_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "upload--node-persist-job",
+      "name": "[upload] Persist Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2528,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $json._graph_row.document_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "document_id": "={{ $json._graph_row.document_id }}",
+            "title": "={{ $json._graph_row.title }}",
+            "filename": "={{ $json._graph_row.filename }}",
+            "total_requirements": "={{ $json._graph_row.total_requirements }}",
+            "graph_json": "={{ $json._graph_row.graph_json }}",
+            "paragraphs_json": "={{ $json._graph_row.paragraphs_json }}",
+            "saved_at": "={{ $json._graph_row.saved_at }}",
+            "status": "={{ $json._graph_row.status }}",
+            "job_id": "={{ $json._graph_row.job_id }}",
+            "model": "={{ $json._graph_row.model }}"
+          },
+          "matchingColumns": [
+            "document_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "upload--node-persist-graph",
+      "name": "[upload] Persist Graph",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2528,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// На основе результатов Qdrant /points/search/batch:\n//   * добавляем similar_to-рёбра между local paragraph-узлами текущего документа и paragraph-узлами других документов\n//   * добавляем external_paragraph-узлы (чтобы граф был замкнут) — кладём в graph.nodes\n//   * заполняем paragraphs[].requirements[].similar_requirements\n//   * пересчитываем stats.intersections / stats.external_docs\n// Из Build Everything подтягиваем base-output, переписываем _job_row.payload_json и _graph_row.{graph_json,paragraphs_json} обогащёнными данными.\nconst be = $('[upload] Build Everything').first().json;\nconst ragPayloads = be._rag_payloads || [];\nconst docId = be.document_id;\n\nlet graph = { nodes: [], edges: [], stats: {} };\nlet paragraphs = [];\nlet extractedReqs = [];\ntry {\n  const _p = JSON.parse(be._job_row.payload_json);\n  graph = _p.graph || graph;\n  paragraphs = _p.paragraphs || [];\n  extractedReqs = Array.isArray(_p.extracted_requirements) ? _p.extracted_requirements : [];\n} catch (_) {}\n\nconst searchInput = ($input.first() && $input.first().json) || {};\nconst searchResult = Array.isArray(searchInput.result) ? searchInput.result : [];\n\nconst nodeIds = new Set(graph.nodes.map((n) => n.id));\n// paragraph_id генерируется детерминированно из текста абзаца → старые чанки с тем же текстом\n// дадут тот же extPId, что и наш local. Чтобы не плодить self-loop'ов, заранее знаем свои.\nconst localParagraphIds = new Set(ragPayloads.map((p) => p.paragraph_id));\nconst externalDocs = new Set();\nlet intersections = 0;\n\nfor (let i = 0; i < ragPayloads.length; i++) {\n  const localPayload = ragPayloads[i] || {};\n  const localPId = localPayload.paragraph_id;\n  const localGI = localPayload.paragraph_global_index;\n  const hits = searchResult[i] || [];\n  for (const hit of hits) {\n    const pl = hit.payload || {};\n    const extDocId = pl.document_id;\n    const extPId = pl.paragraph_id;\n    if (!extDocId || extDocId === docId) continue;\n    if (!extPId) continue;\n    if (localParagraphIds.has(extPId)) continue;\n    if (!nodeIds.has(extPId)) {\n      // Контракт фронта (frontend/src/types/index.ts::GraphNode): type='external', content=<text>, metadata.source_document, metadata.document_id, level=4.\n      graph.nodes.push({\n        id: extPId,\n        type: 'external',\n        label: (pl.document_title || '?') + ': ' + String(pl.content || '').slice(0, 60),\n        content: pl.content || '',\n        metadata: {\n          document_id: extDocId,\n          source_document: pl.document_title || '',\n          score: hit.score,\n        },\n        level: 4,\n      });\n      nodeIds.add(extPId);\n    }\n    // Контракт фронта (GraphEdge): между документами — type='intersects', weight=score (number; фронт делает weight.toFixed(2) и упадёт если undefined).\n    graph.edges.push({\n      id: 'e_sim_' + localPId + '_' + extPId,\n      source: localPId,\n      target: extPId,\n      type: 'intersects',\n      weight: hit.score,\n    });\n    intersections++;\n    externalDocs.add(extDocId);\n    if (typeof localGI === 'number' && paragraphs[localGI]) {\n      const reqs = paragraphs[localGI].requirements || [];\n      for (const r of reqs) {\n        if (!Array.isArray(r.similar_requirements)) r.similar_requirements = [];\n        // Контракт фронта (ParagraphRow.similar_requirements): {id, score, content, document_id?, source_document?}.\n        r.similar_requirements.push({\n          id: extPId,\n          score: hit.score,\n          content: pl.content || '',\n          document_id: extDocId,\n          source_document: pl.document_title || '',\n        });\n      }\n    }\n  }\n}\n\ngraph.stats = Object.assign({}, graph.stats, {\n  total_nodes: graph.nodes.length,\n  total_edges: graph.edges.length,\n  intersections: intersections,\n  external_docs: externalDocs.size,\n});\n\nconst payload = { graph, paragraphs, extracted_requirements: extractedReqs };\nconst newJobRow = Object.assign({}, be._job_row, { payload_json: JSON.stringify(payload) });\nconst newGraphRow = Object.assign({}, be._graph_row, {\n  graph_json: JSON.stringify(graph),\n  paragraphs_json: JSON.stringify(paragraphs),\n});\n\nreturn [{ json: Object.assign({}, be, { _job_row: newJobRow, _graph_row: newGraphRow }) }];"
+      },
+      "id": "upload--node-enrich-graph",
+      "name": "[upload] Enrich Graph",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        -48
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "upload--node-respond-auth-fail",
+      "name": "[upload] Respond Auth Fail",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1536,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\nconst jobId = $('[upload] Webhook: POST /upload').first().json.body.job_id;\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/set-status',\n    body: { job_id: jobId, stage: 'Конвертация документа', percent: 10 },\n    json: true,\n    timeout: 5000,\n  });\n} catch (e) {}\nreturn $input.all();"
+      },
+      "id": "upload--node-status-convert",
+      "name": "[upload] Status: Convert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1120,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\nconst jobId = $('[upload] Webhook: POST /upload').first().json.body.job_id;\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/set-status',\n    body: { job_id: jobId, stage: 'LLM: разбор на требования', percent: 35 },\n    json: true,\n    timeout: 5000,\n  });\n} catch (e) {}\nreturn $input.all();"
+      },
+      "id": "upload--node-status-decompose",
+      "name": "[upload] Status: Decompose",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\nconst jobId = $('[upload] Webhook: POST /upload').first().json.body.job_id;\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/set-status',\n    body: { job_id: jobId, stage: 'LLM: извлечение ФТ/НФТ', percent: 65 },\n    json: true,\n    timeout: 5000,\n  });\n} catch (e) {}\nreturn $input.all();"
+      },
+      "id": "upload--node-status-requirements",
+      "name": "[upload] Status: Requirements",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\nconst jobId = $('[upload] Webhook: POST /upload').first().json.body.job_id;\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/set-status',\n    body: { job_id: jobId, stage: 'RAG-поиск и сохранение', percent: 90 },\n    json: true,\n    timeout: 5000,\n  });\n} catch (e) {}\nreturn $input.all();"
+      },
+      "id": "upload--node-status-rag",
+      "name": "[upload] Status: RAG",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "path": "jobs/status",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "jobstatus--node-webhook",
+      "name": "[jobStatus] Webhook: GET /jobs/status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        1200
+      ],
+      "webhookId": "docs-job-status"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "job_status"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $('[jobStatus] Webhook: GET /jobs/status').first().json.query.job_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "jobstatus--node-fetch",
+      "name": "[jobStatus] Fetch Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1936,
+        1200
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[jobStatus] Webhook: GET /jobs/status').first() && $('[jobStatus] Webhook: GET /jobs/status').first().json && $('[jobStatus] Webhook: GET /jobs/status').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\n// Строка job_status -> {stage, percent}. Нет строки = обработка ещё не дошла до первого этапа.\nconst row = $input.first()?.json;\n// Живой счётчик извлечённых ФТ/НФТ: суммируем по уже сохранённым чанкам (job_chunks пишется по ходу\n// воркером Merge Chunks). Так число «требований» растёт во время обработки, не дожидаясь финала.\n// Считаем только extract-ветку (o.e.extracted_requirements) — это и есть будущий total_requirements.\nlet requirements = 0;\ntry {\n  const jobId = $('[jobStatus] Webhook: GET /jobs/status').first().json.query.job_id || '';\n  if (jobId) {\n    const rr = await this.helpers.httpRequest({\n      method: 'GET',\n      url: BASE + '/webhook/chunk-list',\n      qs: { job_id: jobId },\n      json: true,\n      timeout: 8000,\n    });\n    for (const c of (rr && rr.chunks) || []) {\n      if (!c || c.chunk_index === undefined || Number(c.chunk_index) < 0 || c.output === undefined)\n        continue;\n      let e = '';\n      try {\n        const o = JSON.parse(String(c.output || ''));\n        e = o && typeof o.e === 'string' ? o.e : '';\n      } catch (_) {}\n      if (!e) continue;\n      try {\n        const ej = JSON.parse(e);\n        if (Array.isArray(ej.extracted_requirements))\n          requirements += ej.extracted_requirements.length;\n      } catch (_) {\n        const m = e.match(/\"type\"\\s*:/g);\n        if (m) requirements += m.length;\n      }\n    }\n  }\n} catch (_) {}\nif (!row || row.percent === undefined) {\n  return [{ json: { _http_code: 200, _body: { stage: 'В очереди', percent: 0, requirements } } }];\n}\nreturn [\n  {\n    json: {\n      _http_code: 200,\n      _body: {\n        stage: row.stage || '',\n        percent: Number(row.percent) || 0,\n        updated_at: row.updated_at || '',\n        requirements,\n      },\n    },\n  },\n];"
+      },
+      "id": "jobstatus--node-build",
+      "name": "[jobStatus] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1712,
+        1200
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "jobstatus--node-respond",
+      "name": "[jobStatus] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1488,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "path": "graph",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "graph--node-webhook",
+      "name": "[graph] Webhook: GET /graph",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        544
+      ],
+      "webhookId": "docs-get-graph"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "graph--node-auth",
+      "name": "[graph] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -2000,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "graph--node-if",
+      "name": "[graph] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1808,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "jobs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $('[graph] Webhook: GET /graph').first().json.query.job_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "graph--node-fetch",
+      "name": "[graph] Fetch Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        448
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// jobs.payload_json — JSON-строка {graph, paragraphs}. Достаём graph.\nconst row = $input.first()?.json;\nif (!row || !row.payload_json) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Job not found' } } }];\n}\nlet p = {};\ntry {\n  p = JSON.parse(row.payload_json);\n} catch (_) {}\nconst g = (p && p.graph) || {};\nreturn [\n  {\n    json: {\n      _http_code: 200,\n      _body: { nodes: g.nodes || [], edges: g.edges || [], stats: g.stats || {} },\n    },\n  },\n];"
+      },
+      "id": "graph--node-build",
+      "name": "[graph] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        448
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "graph--node-respond",
+      "name": "[graph] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "path": "graph/by-document",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "graphByDoc--node-webhook",
+      "name": "[graphByDoc] Webhook: GET /graph/by-document",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        912
+      ],
+      "webhookId": "docs-get-graph-by-doc"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "graphByDoc--node-auth",
+      "name": "[graphByDoc] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -2000,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "graphByDoc--node-if",
+      "name": "[graphByDoc] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1808,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $('[graphByDoc] Webhook: GET /graph/by-document').first().json.query.document_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "graphByDoc--node-fetch",
+      "name": "[graphByDoc] Fetch Graph",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        816
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// graphs.graph_json — JSON-строка {nodes,edges,stats}.\nconst row = $input.first()?.json;\nif (!row || !row.graph_json) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Graph for document not found' } } }];\n}\nlet g = {};\ntry {\n  g = JSON.parse(row.graph_json);\n} catch (_) {}\nreturn [\n  {\n    json: {\n      _http_code: 200,\n      _body: { nodes: g.nodes || [], edges: g.edges || [], stats: g.stats || {} },\n    },\n  },\n];"
+      },
+      "id": "graphByDoc--node-build",
+      "name": "[graphByDoc] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        816
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "graphByDoc--node-respond",
+      "name": "[graphByDoc] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "path": "paragraphs",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "paras--node-webhook",
+      "name": "[paras] Webhook: GET /paragraphs",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        560
+      ],
+      "webhookId": "docs-paragraphs"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "paras--node-auth",
+      "name": "[paras] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -208,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "paras--node-if",
+      "name": "[paras] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -16,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "jobs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $('[paras] Webhook: GET /paragraphs').first().json.query.job_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "paras--node-fetch",
+      "name": "[paras] Fetch Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        192,
+        464
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// jobs.payload_json — JSON-строка {graph, paragraphs}. Достаём paragraphs.\nconst row = $input.first()?.json;\nif (!row || !row.payload_json) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Job not found' } } }];\n}\nlet p = {};\ntry {\n  p = JSON.parse(row.payload_json);\n} catch (_) {}\nconst src = (p && p.paragraphs) || [];\nconst chIdx = new Map(),\n  secIdx = new Map(),\n  secCount = new Map();\nconst out = [];\nfor (const pp of src) {\n  const chKey = pp.chapter || '';\n  let ci = chIdx.get(chKey);\n  if (ci === undefined) {\n    ci = chIdx.size;\n    chIdx.set(chKey, ci);\n  }\n  const secKey = chKey + '||' + (pp.section || '');\n  let si = secIdx.get(secKey);\n  if (si === undefined) {\n    si = secCount.get(chKey) || 0;\n    secCount.set(chKey, si + 1);\n    secIdx.set(secKey, si);\n  }\n  const reqs = pp.requirements || [];\n  out.push({\n    chapter_index: ci,\n    chapter_title: pp.chapter || '',\n    section_index: si,\n    section_title: pp.section || '',\n    paragraph_index: pp.paragraph_index || 0,\n    paragraph_text: pp.text || '',\n    facts: reqs.map((r) => r.fact || ''),\n    risks: reqs.map((r) => r.risk || ''),\n    criticality: reqs.map((r) => r.criticality || ''),\n    recommendations: reqs.map((r) => r.recommendation || ''),\n    executors: [...new Set(reqs.flatMap((r) => r.executors || []))],\n    similar_requirements: reqs.flatMap((r) => r.similar_requirements || []),\n    comments: reqs.flatMap((r) => r.comments || []),\n  });\n}\nreturn [{ json: { _http_code: 200, _body: out } }];"
+      },
+      "id": "paras--node-build",
+      "name": "[paras] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        464
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "paras--node-respond",
+      "name": "[paras] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        576,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "path": "paragraphs/by-document",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "parasByDoc--node-webhook",
+      "name": "[parasByDoc] Webhook: GET /paragraphs/by-document",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        928
+      ],
+      "webhookId": "docs-paragraphs-by-doc"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "parasByDoc--node-auth",
+      "name": "[parasByDoc] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -224,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "parasByDoc--node-if",
+      "name": "[parasByDoc] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -32,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $('[parasByDoc] Webhook: GET /paragraphs/by-document').first().json.query.document_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "parasByDoc--node-fetch",
+      "name": "[parasByDoc] Fetch Paragraphs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        176,
+        832
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// graphs.paragraphs_json — JSON-строка массива абзацев.\nconst row = $input.first()?.json;\nif (!row || !row.paragraphs_json) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Document not found' } } }];\n}\nlet src = [];\ntry {\n  src = JSON.parse(row.paragraphs_json) || [];\n} catch (_) {}\nconst chIdx = new Map(),\n  secIdx = new Map(),\n  secCount = new Map();\nconst out = [];\nfor (const p of src) {\n  const chKey = p.chapter || '';\n  let ci = chIdx.get(chKey);\n  if (ci === undefined) {\n    ci = chIdx.size;\n    chIdx.set(chKey, ci);\n  }\n  const secKey = chKey + '||' + (p.section || '');\n  let si = secIdx.get(secKey);\n  if (si === undefined) {\n    si = secCount.get(chKey) || 0;\n    secCount.set(chKey, si + 1);\n    secIdx.set(secKey, si);\n  }\n  const reqs = p.requirements || [];\n  out.push({\n    chapter_index: ci,\n    chapter_title: p.chapter || '',\n    section_index: si,\n    section_title: p.section || '',\n    paragraph_index: p.paragraph_index || 0,\n    paragraph_text: p.text || '',\n    facts: reqs.map((r) => r.fact || ''),\n    risks: reqs.map((r) => r.risk || ''),\n    criticality: reqs.map((r) => r.criticality || ''),\n    recommendations: reqs.map((r) => r.recommendation || ''),\n    executors: [...new Set(reqs.flatMap((r) => r.executors || []))],\n    similar_requirements: reqs.flatMap((r) => r.similar_requirements || []),\n    comments: reqs.flatMap((r) => r.comments || []),\n  });\n}\nreturn [{ json: { _http_code: 200, _body: out } }];"
+      },
+      "id": "parasByDoc--node-build",
+      "name": "[parasByDoc] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        832
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "parasByDoc--node-respond",
+      "name": "[parasByDoc] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        576,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "path": "files/history",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "documents--node-webhook",
+      "name": "[documents] Webhook: GET /files/history",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        1488
+      ],
+      "webhookId": "docs-documents"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "documents--node-auth",
+      "name": "[documents] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -2000,
+        1488
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "documents--node-if",
+      "name": "[documents] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1808,
+        1488
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": []
+        },
+        "returnAll": true,
+        "orderBy": true,
+        "orderByColumn": "saved_at"
+      },
+      "id": "documents--node-list",
+      "name": "[documents] List Graphs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        1392
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// graphs.graph_json — это JSON.stringify({nodes,edges,stats}). Распаковываем только stats — остальное не нужно для списка.\nconst items = $input\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && r.document_id)\n  .map((r) => {\n    let s = {},\n      llm = {};\n    try {\n      const g = JSON.parse(r.graph_json || '{}');\n      s = g.stats || {};\n      llm = g.llm || {};\n    } catch (_) {}\n    return {\n      document_id: r.document_id,\n      title: r.title || '',\n      filename: r.filename || '',\n      saved_at: (r.saved_at || '').toString().slice(0, 19),\n      total_requirements: r.total_requirements || 0,\n      status: r.status || 'completed',\n      job_id: r.job_id || '',\n      model: r.model || '',\n      project_id: r.project_id || '',\n      input_tokens: llm.input_tokens || 0,\n      output_tokens: llm.output_tokens || 0,\n      stats: {\n        total_nodes: s.total_nodes || 0,\n        total_edges: s.total_edges || 0,\n        paragraphs: s.paragraphs || 0,\n        chunks: s.chunks || 0,\n      },\n    };\n  });\nreturn [{ json: { _http_code: 200, _body: items } }];"
+      },
+      "id": "documents--node-build",
+      "name": "[documents] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        1392
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "documents--node-respond",
+      "name": "[documents] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        1504
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Превращаем _rag_payloads в N items для wf_rag_search.\n// Каждый item — отдельный поиск по соответствующему чанку, с фильтром по own-document (cross-doc similar_to ребрам своя точка не нужна).\nconst be = $('[upload] Build Everything').first().json || {};\nconst payloads = be._rag_payloads || [];\nif (!payloads.length) return [];\nreturn payloads.map((p) => ({\n  json: {\n    query: p.content,\n    topK: 5,\n    threshold: 0.55,\n    excludeDocumentId: be.document_id,\n  },\n}));"
+      },
+      "id": "upload--node-build-search-items",
+      "name": "[upload] Build Search Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "upload--node-rag-search-sub",
+      "name": "[upload] RAG Search (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1904,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sub-workflow выдал N items {_idx, hits}. Собираем в формат, который ждёт [upload] Enrich Graph: { result: [ [hits], ... ] }.\nconst be = $('[upload] Build Everything').first().json || {};\nconst payloads = be._rag_payloads || [];\nconst groups = payloads.map(() => []);\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  const idx = typeof j._idx === 'number' ? j._idx : -1;\n  if (idx < 0 || !groups[idx]) continue;\n  groups[idx] = j.hits || [];\n}\nreturn [{ json: { result: groups } }];"
+      },
+      "id": "upload--node-group-search-hits",
+      "name": "[upload] Group Search Hits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        -48
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Развёртываем _rag_texts/_rag_payloads из Build Everything в N items для wf_rag (upsert-ветка).\n// Контракт sub-workflow: каждый item = одна точка в Qdrant {text, payload}.\n// Дедуп прежних точек документа (идемпотентность переаплоада/возобновления) перенесён ВНУТРЬ\n// wf_rag (нода Dedup Document Points) — он backend-aware: local docs_chunks / develonica arch-docs-rag.\nconst be = $('[upload] Build Everything').first().json || {};\nconst texts = be._rag_texts || [];\nconst payloads = be._rag_payloads || [];\nif (!texts.length) return [];\nreturn texts.map((text, i) => ({\n  json: {\n    text: text,\n    payload: payloads[i] || {},\n  },\n}));"
+      },
+      "id": "upload--node-build-upsert-req",
+      "name": "[upload] Build Upsert Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "upload--node-rag-upsert-sub",
+      "name": "[upload] RAG Upsert (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "path": "requirements",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "reqs--node-webhook",
+      "name": "[reqs] Webhook: GET /requirements",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        576
+      ],
+      "webhookId": "docs-requirements"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "reqs--node-auth",
+      "name": "[reqs] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1616,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "reqs--node-if",
+      "name": "[reqs] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1808,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "jobs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "job_id",
+              "keyValue": "={{ $('[reqs] Webhook: GET /requirements').first().json.query.job_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "reqs--node-fetch",
+      "name": "[reqs] Fetch Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2016,
+        480
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// jobs.payload_json -> {graph, paragraphs, extracted_requirements}.\nconst row = $input.first()?.json;\nif (!row || !row.payload_json) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Job not found' } } }];\n}\nlet p = {};\ntry {\n  p = JSON.parse(row.payload_json);\n} catch (_) {}\nconst out = p && Array.isArray(p.extracted_requirements) ? p.extracted_requirements : [];\nreturn [{ json: { _http_code: 200, _body: out } }];"
+      },
+      "id": "reqs--node-build",
+      "name": "[reqs] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        480
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "reqs--node-respond",
+      "name": "[reqs] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2416,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "path": "requirements/by-document",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "reqsByDoc--node-webhook",
+      "name": "[reqsByDoc] Webhook: GET /requirements/by-document",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        944
+      ],
+      "webhookId": "docs-requirements-by-document"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "reqsByDoc--node-auth",
+      "name": "[reqsByDoc] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1632,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "reqsByDoc--node-if",
+      "name": "[reqsByDoc] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1824,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "jobs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $('[reqsByDoc] Webhook: GET /requirements/by-document').first().json.query.document_id || '' }}"
+            }
+          ]
+        },
+        "limit": 1000
+      },
+      "id": "reqsByDoc--node-fetch",
+      "name": "[reqsByDoc] Fetch Job",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2016,
+        848
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// jobs.payload_json -> {graph, paragraphs, extracted_requirements}. При нескольких job на один document_id берём свежайший по created_at (jobs накапливаются по job_id; graphs — upsert по doc, тут — нет).\nconst rows = $input\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && r.payload_json);\nconst row = rows.sort((a, b) =>\n  String(b.created_at || '').localeCompare(String(a.created_at || '')),\n)[0];\nif (!row) {\n  return [{ json: { _http_code: 404, _body: { detail: 'Job not found' } } }];\n}\nlet p = {};\ntry {\n  p = JSON.parse(row.payload_json);\n} catch (_) {}\nconst out = p && Array.isArray(p.extracted_requirements) ? p.extracted_requirements : [];\nreturn [{ json: { _http_code: 200, _body: out } }];"
+      },
+      "id": "reqsByDoc--node-build",
+      "name": "[reqsByDoc] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2208,
+        848
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "reqsByDoc--node-respond",
+      "name": "[reqsByDoc] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2416,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Чистая логика чанкинга и сборки — тестируется офлайн, затем встраивается в ноды\n// [upload] Build Chunks и [upload] Merge Chunks один-в-один (см. patch_wf.mjs).\n// НИКАКИХ n8n-глобалов здесь: только обычные функции над plain-объектами.\n\nfunction buildChunks(chapters, opts) {\n  const maxParas = (opts && opts.maxParas) || 18;\n  const maxChars = (opts && opts.maxChars) || 7000;\n\n  // Плоский список абзацев со СКВОЗНЫМ gi в ТОЧНО ТОМ ЖЕ порядке обхода,\n  // что и [upload] Build Everything (for ci -> for si -> for pi). gi === flatIdx там.\n  const flat = [];\n  let gi = 0;\n  for (let ci = 0; ci < chapters.length; ci++) {\n    const ch = chapters[ci];\n    for (let si = 0; si < ch.sections.length; si++) {\n      const sec = ch.sections[si];\n      for (let pi = 0; pi < sec.paragraphs.length; pi++) {\n        flat.push({\n          ci,\n          si,\n          pi,\n          gi: gi++,\n          text: String(sec.paragraphs[pi] || ''),\n          chTitle: ch.title,\n          secTitle: sec.title,\n        });\n      }\n    }\n  }\n  const total = flat.length;\n\n  // Группируем подряд идущие абзацы одной секции.\n  const sections = [];\n  for (const d of flat) {\n    const last = sections[sections.length - 1];\n    if (last && last.ci === d.ci && last.si === d.si) last.paras.push(d);\n    else sections.push({ ci: d.ci, si: d.si, paras: [d] });\n  }\n\n  const charsOf = (arr) => arr.reduce((a, d) => a + d.text.length, 0);\n  const chunks = [];\n  let cur = null;\n  const flush = () => {\n    if (cur && cur.length) chunks.push(cur);\n    cur = null;\n  };\n\n  for (const sec of sections) {\n    if (sec.paras.length > maxParas || charsOf(sec.paras) > maxChars) {\n      // Секция крупнее лимита — добиваем по абзацам в отдельные чанки.\n      flush();\n      let sub = [],\n        subChars = 0;\n      for (const d of sec.paras) {\n        if (sub.length >= maxParas || (subChars + d.text.length > maxChars && sub.length)) {\n          chunks.push(sub);\n          sub = [];\n          subChars = 0;\n        }\n        sub.push(d);\n        subChars += d.text.length;\n      }\n      if (sub.length) chunks.push(sub);\n    } else {\n      // Мелкие секции упаковываем вместе, пока влезает.\n      if (\n        cur &&\n        (cur.length + sec.paras.length > maxParas || charsOf(cur) + charsOf(sec.paras) > maxChars)\n      )\n        flush();\n      if (!cur) cur = [];\n      for (const d of sec.paras) cur.push(d);\n    }\n  }\n  flush();\n\n  return chunks.map((paras, idx) => {\n    const lines = [];\n    let curKey = null;\n    for (const d of paras) {\n      const key = d.ci + '.' + d.si;\n      if (key !== curKey) {\n        lines.push('## ' + d.chTitle + ' → ' + d.secTitle);\n        curKey = key;\n      }\n      lines.push('[p' + d.ci + '.' + d.si + '.' + d.pi + '] ' + d.text);\n    }\n    return {\n      chunk_index: idx,\n      chunk_total: chunks.length,\n      total_paragraphs: total,\n      chunk_paragraphs: paras.map((d) => ({\n        ci: d.ci,\n        si: d.si,\n        pi: d.pi,\n        gi: d.gi,\n        text: d.text,\n      })),\n      chunk_text: lines.join('\\n'),\n    };\n  });\n}\n\n// Балансным разбором достаём максимум ПОЛНЫХ {} из (возможно оборванного) JSON\n// внутри массива по ключу key. Порт из Build Everything.salvageReqs, обобщён на key.\nfunction salvageObjects(s, key) {\n  const out = [];\n  const ki = key ? s.indexOf(key) : -1;\n  let i = ki >= 0 ? s.indexOf('[', ki) : s.indexOf('[');\n  if (i < 0) i = 0;\n  let depth = 0,\n    start = -1,\n    inStr = false,\n    esc = false;\n  for (let k = i; k < s.length; k++) {\n    const c = s[k];\n    if (inStr) {\n      if (esc) esc = false;\n      else if (c === '\\\\') esc = true;\n      else if (c === '\"') inStr = false;\n      continue;\n    }\n    if (c === '\"') {\n      inStr = true;\n      continue;\n    }\n    if (c === '{') {\n      if (depth === 0) start = k;\n      depth++;\n    } else if (c === '}') {\n      if (depth > 0) {\n        depth--;\n        if (depth === 0 && start >= 0) {\n          try {\n            out.push(JSON.parse(s.slice(start, k + 1)));\n          } catch (_) {}\n          start = -1;\n        }\n      }\n    }\n  }\n  return out;\n}\n\n// chainLlm v1.9 кладёт распарсенный JSON прямо в .json; fallback на text/output/message.content;\n// если строка оборвана дегенерацией — salvage по обоим ключам.\nfunction parseChunkOutput(o) {\n  if (!o) return {};\n  if (Array.isArray(o.requirements) || Array.isArray(o.extracted_requirements)) return o;\n  const content = o.text || o.output || (o.message && o.message.content);\n  if (!content) return {};\n  if (typeof content !== 'string') return content;\n  try {\n    return JSON.parse(content);\n  } catch (_) {\n    return {\n      requirements: salvageObjects(content, 'requirements'),\n      extracted_requirements: salvageObjects(content, 'extracted_requirements'),\n    };\n  }\n}\n\n// Склейка выходов чанков обратно в документ-уровневые структуры, которые ждёт Build Everything:\n//   merged_decompose.requirements — ПЛОТНЫЙ массив длиной = всего абзацев, в порядке gi (== порядок Build Everything)\n//   merged_extracted.extracted_requirements — конкатенация ФТ/НФТ всех чанков\nfunction mergeChunks(chunkDescriptors, llmOutputs, chapters) {\n  // totalParas считаем по chapters — это гарантирует выравнивание с циклом Build Everything.\n  let totalParas = 0;\n  for (const ch of chapters) for (const sec of ch.sections) totalParas += sec.paragraphs.length;\n\n  const dense = new Array(totalParas).fill(null);\n  const extracted = [];\n  let covered = 0;\n\n  // llmOutputs[k] = { d: <decompose JSON-строка>, e: <extract JSON-строка> }.\n  for (let k = 0; k < chunkDescriptors.length; k++) {\n    const cps = (chunkDescriptors[k] && chunkDescriptors[k].chunk_paragraphs) || [];\n    const o = llmOutputs[k] || {};\n    // decompose сопоставляем по ref-метке [pCI.SI.PI] -> gi (надёжнее позиционного: модель\n    // пропускает несодержательные абзацы — заголовки/оглавление — без сдвига остальных).\n    const refMap = {};\n    for (const c of cps) refMap[c.ci + '.' + c.si + '.' + c.pi] = c.gi;\n    const dec = parseChunkOutput({ text: o.d });\n    const dreqs = Array.isArray(dec.requirements) ? dec.requirements : [];\n    for (const r of dreqs) {\n      if (!r || !String(r.fact || '').trim()) continue;\n      const key = String(r.ref || '').replace(/[^\\d.]/g, '');\n      const gi = refMap[key];\n      if (gi !== undefined && gi >= 0 && gi < totalParas && dense[gi] === null) {\n        dense[gi] = r;\n        covered++;\n      }\n    }\n    const ext = parseChunkOutput({ text: o.e });\n    const exs = Array.isArray(ext.extracted_requirements) ? ext.extracted_requirements : [];\n    for (const e of exs) if (e) extracted.push(e);\n  }\n\n  return {\n    merged_decompose: { requirements: dense.map((r) => r || { fact: '' }) },\n    merged_extracted: { extracted_requirements: extracted },\n    _coverage: {\n      total_paragraphs: totalParas,\n      covered_paragraphs: covered,\n      chunks: chunkDescriptors.length,\n    },\n  };\n}\n\nconst src = $('[upload] Parse + Generate IDs').first().json;\n// Размер чанка из config (как conc/pass_budget_ms): дробим под медленные модели — у qwen3-235b\n// плотный чанк extract+decompose > 60с task-runner. Дефолт 8/3000 = прежнее (35b-a3b укладывается).\nlet _mp = 8, _mc = 3000;\ntry {\n  const _lc = ($('[upload] Docling Config').first() && $('[upload] Docling Config').first().json) || {};\n  if (Number(_lc.chunk_max_paras) > 0) _mp = Number(_lc.chunk_max_paras);\n  if (Number(_lc.chunk_max_chars) > 0) _mc = Number(_lc.chunk_max_chars);\n} catch (_) {}\nlet chunks = buildChunks(src.chapters || [], { maxParas: _mp, maxChars: _mc });\nif (!chunks.length)\n  chunks = [\n    { chunk_index: 0, chunk_total: 1, total_paragraphs: 0, chunk_paragraphs: [], chunk_text: '' },\n  ];\nreturn chunks.map((c) => ({ json: c }));"
+      },
+      "id": "upload--node-build-chunks",
+      "name": "[upload] Build Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { job_id: $('[upload] Webhook: POST /upload').first().json.body.job_id, document_id: $('[upload] Webhook: POST /upload').first().json.body.document_id, status: 'processing' } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "upload--node-respond-processing",
+      "name": "[upload] Respond Processing",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1536,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\nconst jobId = $('[upload] Webhook: POST /upload').first().json.body.job_id;\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/set-status',\n    body: { job_id: jobId, stage: 'Готово', percent: 100 },\n    json: true,\n    timeout: 5000,\n  });\n} catch (e) {}\nreturn $input.all();"
+      },
+      "id": "upload--node-status-done",
+      "name": "[upload] Status: Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2704,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\n// Чистая логика чанкинга и сборки — тестируется офлайн, затем встраивается в ноды\n// [upload] Build Chunks и [upload] Merge Chunks один-в-один (см. patch_wf.mjs).\n// НИКАКИХ n8n-глобалов здесь: только обычные функции над plain-объектами.\n\nfunction buildChunks(chapters, opts) {\n  const maxParas = (opts && opts.maxParas) || 18;\n  const maxChars = (opts && opts.maxChars) || 7000;\n\n  // Плоский список абзацев со СКВОЗНЫМ gi в ТОЧНО ТОМ ЖЕ порядке обхода,\n  // что и [upload] Build Everything (for ci -> for si -> for pi). gi === flatIdx там.\n  const flat = [];\n  let gi = 0;\n  for (let ci = 0; ci < chapters.length; ci++) {\n    const ch = chapters[ci];\n    for (let si = 0; si < ch.sections.length; si++) {\n      const sec = ch.sections[si];\n      for (let pi = 0; pi < sec.paragraphs.length; pi++) {\n        flat.push({\n          ci,\n          si,\n          pi,\n          gi: gi++,\n          text: String(sec.paragraphs[pi] || ''),\n          chTitle: ch.title,\n          secTitle: sec.title,\n        });\n      }\n    }\n  }\n  const total = flat.length;\n\n  // Группируем подряд идущие абзацы одной секции.\n  const sections = [];\n  for (const d of flat) {\n    const last = sections[sections.length - 1];\n    if (last && last.ci === d.ci && last.si === d.si) last.paras.push(d);\n    else sections.push({ ci: d.ci, si: d.si, paras: [d] });\n  }\n\n  const charsOf = (arr) => arr.reduce((a, d) => a + d.text.length, 0);\n  const chunks = [];\n  let cur = null;\n  const flush = () => {\n    if (cur && cur.length) chunks.push(cur);\n    cur = null;\n  };\n\n  for (const sec of sections) {\n    if (sec.paras.length > maxParas || charsOf(sec.paras) > maxChars) {\n      // Секция крупнее лимита — добиваем по абзацам в отдельные чанки.\n      flush();\n      let sub = [],\n        subChars = 0;\n      for (const d of sec.paras) {\n        if (sub.length >= maxParas || (subChars + d.text.length > maxChars && sub.length)) {\n          chunks.push(sub);\n          sub = [];\n          subChars = 0;\n        }\n        sub.push(d);\n        subChars += d.text.length;\n      }\n      if (sub.length) chunks.push(sub);\n    } else {\n      // Мелкие секции упаковываем вместе, пока влезает.\n      if (\n        cur &&\n        (cur.length + sec.paras.length > maxParas || charsOf(cur) + charsOf(sec.paras) > maxChars)\n      )\n        flush();\n      if (!cur) cur = [];\n      for (const d of sec.paras) cur.push(d);\n    }\n  }\n  flush();\n\n  return chunks.map((paras, idx) => {\n    const lines = [];\n    let curKey = null;\n    for (const d of paras) {\n      const key = d.ci + '.' + d.si;\n      if (key !== curKey) {\n        lines.push('## ' + d.chTitle + ' → ' + d.secTitle);\n        curKey = key;\n      }\n      lines.push('[p' + d.ci + '.' + d.si + '.' + d.pi + '] ' + d.text);\n    }\n    return {\n      chunk_index: idx,\n      chunk_total: chunks.length,\n      total_paragraphs: total,\n      chunk_paragraphs: paras.map((d) => ({\n        ci: d.ci,\n        si: d.si,\n        pi: d.pi,\n        gi: d.gi,\n        text: d.text,\n      })),\n      chunk_text: lines.join('\\n'),\n    };\n  });\n}\n\n// Балансным разбором достаём максимум ПОЛНЫХ {} из (возможно оборванного) JSON\n// внутри массива по ключу key. Порт из Build Everything.salvageReqs, обобщён на key.\nfunction salvageObjects(s, key) {\n  const out = [];\n  const ki = key ? s.indexOf(key) : -1;\n  let i = ki >= 0 ? s.indexOf('[', ki) : s.indexOf('[');\n  if (i < 0) i = 0;\n  let depth = 0,\n    start = -1,\n    inStr = false,\n    esc = false;\n  for (let k = i; k < s.length; k++) {\n    const c = s[k];\n    if (inStr) {\n      if (esc) esc = false;\n      else if (c === '\\\\') esc = true;\n      else if (c === '\"') inStr = false;\n      continue;\n    }\n    if (c === '\"') {\n      inStr = true;\n      continue;\n    }\n    if (c === '{') {\n      if (depth === 0) start = k;\n      depth++;\n    } else if (c === '}') {\n      if (depth > 0) {\n        depth--;\n        if (depth === 0 && start >= 0) {\n          try {\n            out.push(JSON.parse(s.slice(start, k + 1)));\n          } catch (_) {}\n          start = -1;\n        }\n      }\n    }\n  }\n  return out;\n}\n\n// chainLlm v1.9 кладёт распарсенный JSON прямо в .json; fallback на text/output/message.content;\n// если строка оборвана дегенерацией — salvage по обоим ключам.\nfunction parseChunkOutput(o) {\n  if (!o) return {};\n  if (Array.isArray(o.requirements) || Array.isArray(o.extracted_requirements)) return o;\n  const content = o.text || o.output || (o.message && o.message.content);\n  if (!content) return {};\n  if (typeof content !== 'string') return content;\n  try {\n    return JSON.parse(content);\n  } catch (_) {\n    return {\n      requirements: salvageObjects(content, 'requirements'),\n      extracted_requirements: salvageObjects(content, 'extracted_requirements'),\n    };\n  }\n}\n\n// Склейка выходов чанков обратно в документ-уровневые структуры, которые ждёт Build Everything:\n//   merged_decompose.requirements — ПЛОТНЫЙ массив длиной = всего абзацев, в порядке gi (== порядок Build Everything)\n//   merged_extracted.extracted_requirements — конкатенация ФТ/НФТ всех чанков\nfunction mergeChunks(chunkDescriptors, llmOutputs, chapters) {\n  // totalParas считаем по chapters — это гарантирует выравнивание с циклом Build Everything.\n  let totalParas = 0;\n  for (const ch of chapters) for (const sec of ch.sections) totalParas += sec.paragraphs.length;\n\n  const dense = new Array(totalParas).fill(null);\n  const extracted = [];\n  let covered = 0;\n\n  // llmOutputs[k] = { d: <decompose JSON-строка>, e: <extract JSON-строка> }.\n  for (let k = 0; k < chunkDescriptors.length; k++) {\n    const cps = (chunkDescriptors[k] && chunkDescriptors[k].chunk_paragraphs) || [];\n    const o = llmOutputs[k] || {};\n    // decompose сопоставляем по ref-метке [pCI.SI.PI] -> gi (надёжнее позиционного: модель\n    // пропускает несодержательные абзацы — заголовки/оглавление — без сдвига остальных).\n    const refMap = {};\n    for (const c of cps) refMap[c.ci + '.' + c.si + '.' + c.pi] = c.gi;\n    const dec = parseChunkOutput({ text: o.d });\n    const dreqs = Array.isArray(dec.requirements) ? dec.requirements : [];\n    for (const r of dreqs) {\n      if (!r || !String(r.fact || '').trim()) continue;\n      const key = String(r.ref || '').replace(/[^\\d.]/g, '');\n      const gi = refMap[key];\n      if (gi !== undefined && gi >= 0 && gi < totalParas && dense[gi] === null) {\n        dense[gi] = r;\n        covered++;\n      }\n    }\n    const ext = parseChunkOutput({ text: o.e });\n    const exs = Array.isArray(ext.extracted_requirements) ? ext.extracted_requirements : [];\n    for (const e of exs) if (e) extracted.push(e);\n  }\n\n  return {\n    merged_decompose: { requirements: dense.map((r) => r || { fact: '' }) },\n    merged_extracted: { extracted_requirements: extracted },\n    _coverage: {\n      total_paragraphs: totalParas,\n      covered_paragraphs: covered,\n      chunks: chunkDescriptors.length,\n    },\n  };\n}\n\nconst chapters = $('[upload] Parse + Generate IDs').first().json.chapters || [];\nconst chunks = $('[upload] Build Chunks').all().map((i) => i.json);\nconst jobId = ($('[upload] Webhook: POST /upload').first().json.body || {}).job_id;\nconst http = this.helpers.httpRequest.bind(this.helpers);\nconst OLLAMA = 'http://host.docker.internal:11434/api/generate';\nconst MODEL = 'qwen3:8b';\n// Develonica — корпоративный Open WebUI (OpenAI-совместимый). Base/ключ из $env; см. wf_develonica_*.\n// ВАЖНО: бьём в /api/v1/chat/completions (НЕ /responses); домен резолвится через extra_hosts (VPN-IP).\nlet DEVELONICA_URL =\n  String('https://ai.develonica.group').replace(/\\/+$/, '') +\n  '/api/v1/chat/completions';\n// LM Studio — локальный OpenAI-совместимый сервер (дефолт http://192.168.2.135:1234/v1), модель google/gemma-4-12b; Bearer опционален.\nlet LMSTUDIO_URL =\n  String('http://192.168.2.135:1234/v1').replace(/\\/+$/, '') +\n  '/chat/completions';\n// JSON-схемы для structured output LM Studio (передаются в callLLM → response_format). enum фиксирует type/criticality.\nconst LMSTUDIO_EXTRACT_SCHEMA = {\n  type: 'object',\n  properties: {\n    extracted_requirements: {\n      type: 'array',\n      items: {\n        type: 'object',\n        properties: {\n          type: { type: 'string', enum: ['ФТ', 'НФТ'] },\n          title: { type: 'string' },\n          statement: { type: 'string' },\n          fact: { type: 'string' },\n          risk: { type: 'string' },\n          criticality: { type: 'string', enum: ['Высокий', 'Средний', 'Низкий'] },\n          recommendation: { type: 'string' },\n        },\n        required: ['type', 'title', 'statement', 'fact', 'risk', 'criticality', 'recommendation'],\n      },\n    },\n  },\n  required: ['extracted_requirements'],\n};\nconst LMSTUDIO_DECOMPOSE_SCHEMA = {\n  type: 'object',\n  properties: {\n    requirements: {\n      type: 'array',\n      items: {\n        type: 'object',\n        properties: {\n          ref: { type: 'string' },\n          fact: { type: 'string' },\n          risk: { type: 'string' },\n          criticality: { type: 'string', enum: ['Высокий', 'Средний', 'Низкий'] },\n          recommendation: { type: 'string' },\n        },\n        required: ['ref', 'fact', 'risk', 'criticality', 'recommendation'],\n      },\n    },\n  },\n  required: ['requirements'],\n};\n// LLM-провайдер — тумблер БЕЗ рестарта: читаем строку config(llm_extraction) НАПРЯМУЮ из ноды\n// [upload] Docling Config (dataTable), БЕЗ self-HTTP к /webhook/llm-config — на «чужих» стендах\n// task-runner отдельный контейнер и сеть до n8n не доходит, а dataTable читается нативно.\n// ollama — дефолт/фолбэк (строки нет/пусто/не распознан провайдер); ключ — из колонки api_key.\nlet API_KEY = ''; let PROVIDER = 'ollama',\n  CLAUDE_MODEL = 'claude-haiku-4-5',\n  DEVELONICA_MODEL = String('dvl-analyst'),\n  LMSTUDIO_MODEL = String('google/gemma-4-12b'),\n  CONC = 2,\n  PASS_BUDGET_MS = 45000;\ntry {\n  const lc = ($('[upload] Docling Config').first() && $('[upload] Docling Config').first().json) || {};\n  if (lc && lc.pass_budget_ms) PASS_BUDGET_MS = Number(lc.pass_budget_ms) || PASS_BUDGET_MS;\n  const _p = lc ? String(lc.provider || '').toLowerCase() : ''; API_KEY = (lc && lc.api_key) ? String(lc.api_key) : '';\n  if (_p === 'claude') {\n    PROVIDER = 'claude';\n    if (lc.model) CLAUDE_MODEL = String(lc.model);\n    CONC = Number(lc.conc) > 0 ? Number(lc.conc) : 3;\n  } else if (_p === 'develonica') {\n    PROVIDER = 'develonica';\n    if (lc.model) DEVELONICA_MODEL = String(lc.model); if (lc.base_url) DEVELONICA_URL = String(lc.base_url).replace(/\\/+$/, '') + '/api/v1/chat/completions';\n    CONC = Number(lc.conc) > 0 ? Number(lc.conc) : 3;\n  } else if (_p === 'lmstudio') {\n    PROVIDER = 'lmstudio';\n    if (lc.model) LMSTUDIO_MODEL = String(lc.model); if (lc.base_url) LMSTUDIO_URL = String(lc.base_url).replace(/\\/+$/, '') + '/chat/completions';\n    CONC = Number(lc.conc) > 0 ? Number(lc.conc) : 2;\n  }\n} catch (_) {}\nconst PROMPT =\n  'Ты экспертный аналитик требований. Анализируй фрагмент технического документа.\\nВозвращай СТРОГО JSON: {\"extracted_requirements\": [{\"type\": \"ФТ\"|\"НФТ\", \"title\": str, \"statement\": str, \"fact\": str, \"risk\": str, \"criticality\": \"Высокий\"|\"Средний\"|\"Низкий\", \"recommendation\": str}]}.\\nПравила: (1) В \"extracted_requirements\" — все функциональные (ФТ) и нефункциональные (НФТ) требования из этого фрагмента, по одному объекту на требование; если требований нет — пустой массив. (2) \"title\", \"statement\", \"fact\" бери СТРОГО из текста, не выдумывай. (3) \"risk\" — чем грозит невыполнение требования; \"recommendation\" — что конкретно сделать для его выполнения; \"criticality\" — Высокий/Средний/Низкий. Эти три поля — твой аналитический вывод, заполняй их ОСМЫСЛЕННО, не пиши \"unknown\". (4) Каждое строковое поле — одна короткая строка БЕЗ переносов строк, не длиннее 200 символов. (5) Тип требования: ФТ (функциональное) — ЧТО система делает (действия, обработка данных, проверки, формирование/загрузка/выгрузка/отображение, доступ к функции/элементу/кнопке в зависимости от роли или этапа жизненного цикла). НФТ (нефункциональное) — атрибуты качества и ограничения (производительность, время отклика, нагрузка, отказоустойчивость, доступность системы, масштабируемость, безопасность как свойство, удобство, локализация, форматы файлов, соответствие законам/стандартам/приказам, резервное копирование и восстановление). Если требование описывает ДЕЙСТВИЕ системы или доступность функции/элемента для роли/этапа — это ФТ, НЕ НФТ. По умолчанию ставь ФТ; НФТ только при ЯВНОМ атрибуте качества.\\n\\nФрагмент:\\n\\n';\nconst DECOMPOSE_PROMPT =\n  'Ты аналитик требований. Разбери фрагмент технического документа НА АТОМАРНЫЕ ТРЕБОВАНИЯ ПО АБЗАЦАМ.\\nКаждый абзац помечен меткой вида [pЧ.Ч.Ч] в начале строки.\\nВозвращай СТРОГО JSON: {\"requirements\": [{\"ref\": \"pЧ.Ч.Ч\", \"fact\": str, \"risk\": str, \"criticality\": \"Высокий\"|\"Средний\"|\"Низкий\", \"recommendation\": str}]}.\\nПравила: (1) Для КАЖДОГО абзаца, несущего требование, факт или ограничение — ровно один объект; \"ref\" = ТОЧНАЯ метка абзаца из текста. (2) Абзацы-заголовки, строки оглавления, служебные/таблично-разметочные и чисто вводные — ПРОПУСКАЙ. (3) \"fact\" — суть требования абзаца, СТРОГО по тексту, без выдумок. (4) \"risk\" — чем грозит невыполнение; \"recommendation\" — что конкретно сделать; \"criticality\" — Высокий/Средний/Низкий; заполняй ОСМЫСЛЕННО, не пиши \"unknown\". (5) Каждое строковое поле — одна строка без переносов, не длиннее 200 символов. (6) Метки не выдумывай и не меняй.\\n\\nФрагмент:\\n\\n';\n// На стендах, где self-HTTP из task-runner не доходит, КАЖДЫЙ self-HTTP висит до своего таймаута\n// (checkCancel/saveChunk/set-status) и копит десятки секунд за проход → 60с-краш. Детектим по\n// первому chunk-list (ниже) и дальше пропускаем все self-HTTP мгновенно. На рабочем хосте = false.\nlet _selfHttpDead = false;\nconst setStatus = async (stage, percent) => {\n  if (_selfHttpDead) return;\n  try {\n    await http({\n      method: 'POST',\n      url: BASE + '/webhook/set-status',\n      body: { job_id: jobId, stage, percent },\n      json: true,\n      timeout: 5000,\n    });\n  } catch (_) {}\n};\n// Чекпойнт-возобновление: тянем уже посчитанные чанки (по job_id) из job_chunks. При повторном\n// прогоне (wf_resume re-POST того же файла с тем же job_id) пропускаем готовые чанки — экономим\n// самые дорогие 10-20 мин LLM-декода. Build Chunks детерминирован → chunk_index совпадают.\n// Чекпойнт хранит per-чанк JSON {d,e}. Старый формат (голая строка extract) трактуем как\n// { d:'', e:<строка> } — decompose у таких пуст (реестр останется заглушкой до переобработки).\nconst _parseSaved = (s) => {\n  const str = String(s || '');\n  try {\n    const o = JSON.parse(str);\n    if (o && (typeof o.d === 'string' || typeof o.e === 'string'))\n      return { d: o.d || '', e: o.e || '', ui: Number(o.ui) || 0, uo: Number(o.uo) || 0 };\n  } catch (_) {}\n  return { d: '', e: str, ui: 0, uo: 0 };\n};\nconst saved = {};\ntry {\n  const rr = await http({\n    method: 'GET',\n    url: BASE + '/webhook/chunk-list',\n    qs: { job_id: jobId },\n    json: true,\n    timeout: 4000,\n  });\n  for (const row of (rr && rr.chunks) || []) {\n    if (\n      row &&\n      row.chunk_index !== undefined &&\n      Number(row.chunk_index) >= 0 &&\n      row.output !== undefined\n    )\n      saved[Number(row.chunk_index)] = _parseSaved(row.output);\n  }\n} catch (_) {\n  _selfHttpDead = true;\n}\nconst saveChunk = async (k, out) => {\n  if (_selfHttpDead) return;\n  try {\n    await http({\n      method: 'POST',\n      url: BASE + '/webhook/chunk-save',\n      body: { job_id: jobId, chunk_index: k, output: out },\n      json: true,\n      timeout: 15000,\n    });\n  } catch (_) {}\n};\nconst reportProgress = async () => {\n  if (done === 1 || done === total || done % 3 === 0) {\n    await setStatus(\n      'LLM: обработка фрагментов (' + done + '/' + total + ')',\n      35 + Math.round((29 * done) / Math.max(1, total)),\n    );\n  }\n};\n// Единый вызов LLM на чанк → строка-JSON. Для claude снимаем ```json-заборы и берём первый {...}.\nconst stripJson = (s) => {\n  let t = String(s || '').trim();\n  const m = t.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  if (m) t = m[1].trim();\n  const a = t.indexOf('{'),\n    b = t.lastIndexOf('}');\n  return a >= 0 && b > a ? t.slice(a, b + 1) : t;\n};\nlet _usageIn = 0,\n  _usageOut = 0,\n  _llmCalls = 0;\n// Retry с экспоненциальным backoff на ВРЕМЕННЫЕ ошибки LLM: 429 (rate-limit), 529 (overloaded),\n// 5xx и сетевые таймауты. БЕЗ этого burst к Anthropic при conc>2 терял фрагменты молча\n// (catch → outputs[k]=''), документ помечался completed с дырами. 4xx кроме 429 не ретраим.\nconst _sleep = (ms) => new Promise((res) => setTimeout(res, ms));\nconst _httpStatus = (e) => {\n  const s =\n    e &&\n    (e.httpCode ||\n      e.statusCode ||\n      (e.response && (e.response.status || e.response.statusCode)) ||\n      (e.cause && e.cause.statusCode));\n  if (s) return Number(s);\n  const m = String((e && e.message) || '').match(/\\b(429|529|500|502|503|504)\\b/);\n  return m ? Number(m[1]) : 0;\n};\nconst _withRetry = async (fn) => {\n  const MAX = 5;\n  let delay = 2000;\n  for (let attempt = 0; ; attempt++) {\n    try {\n      return await fn();\n    } catch (e) {\n      const st = _httpStatus(e);\n      const retriable =\n        st === 429 ||\n        st === 529 ||\n        st === 500 ||\n        st === 502 ||\n        st === 503 ||\n        st === 504 ||\n        (st === 0 &&\n          /timeout|socket|network|ECONN|EAI_AGAIN|ETIMEDOUT|aborted/i.test(\n            String((e && e.message) || ''),\n          ));\n      if (attempt >= MAX || !retriable) throw e;\n      await _sleep(Math.min(delay, 30000) + Math.floor(Math.random() * 750));\n      delay *= 2;\n    }\n  }\n};\nconst callLLM = async (prompt, chunkText, maxTok, schema) => {\n  const _mt = maxTok || 3072;\n  if (PROVIDER === 'claude') {\n    const r = await _withRetry(() =>\n      http({\n        method: 'POST',\n        url: 'https://api.anthropic.com/v1/messages',\n        json: true,\n        timeout: 120000,\n        headers: {\n          'x-api-key': (API_KEY || '').trim(),\n          'anthropic-version': '2023-06-01',\n          'content-type': 'application/json',\n        },\n        body: {\n          model: CLAUDE_MODEL,\n          max_tokens: _mt,\n          temperature: 0.2,\n          messages: [{ role: 'user', content: prompt + chunkText }],\n        },\n      }),\n    );\n    const _ui = (r && r.usage && Number(r.usage.input_tokens)) || 0;\n    const _uo = (r && r.usage && Number(r.usage.output_tokens)) || 0;\n    return { t: stripJson((r && r.content && r.content[0] && r.content[0].text) || ''), ui: _ui, uo: _uo };\n  }\n  if (PROVIDER === 'develonica') {\n    const r = await _withRetry(() =>\n      http({\n        method: 'POST',\n        url: DEVELONICA_URL,\n        json: true,\n        timeout: 120000,\n        headers: {\n          Authorization: 'Bearer ' + (API_KEY || '').trim(),\n          'content-type': 'application/json',\n        },\n        body: {\n          model: DEVELONICA_MODEL,\n          max_tokens: _mt,\n          temperature: 0.2,\n          stream: false,\n          messages: [{ role: 'system', content: 'Reasoning: low' }, { role: 'user', content: prompt + chunkText }],\n        },\n      }),\n    );\n    const _ui = (r && r.usage && Number(r.usage.prompt_tokens)) || 0;\n    const _uo = (r && r.usage && Number(r.usage.completion_tokens)) || 0;\n    return { t: stripJson(\n      (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) ||\n        '',\n    ), ui: _ui, uo: _uo };\n  }\n  if (PROVIDER === 'lmstudio') {\n    // gemma в LM Studio — reasoning-модель: на сложном промпте reasoning_content съедает весь max_tokens,\n    // и content остаётся пустым (finish=length). response_format json_schema (strict) включает GBNF-грамматику,\n    // которая подавляет reasoning (замер: reasoning_tokens 3069→0) и гарантирует валидный JSON в content.\n    const _body = {\n      model: LMSTUDIO_MODEL,\n      max_tokens: _mt,\n      temperature: 0.3,\n      stream: false,\n      messages: [{ role: 'user', content: prompt + chunkText }],\n    };\n    if (schema)\n      _body.response_format = {\n        type: 'json_schema',\n        json_schema: { name: 'requirements', strict: true, schema },\n      };\n    const r = await _withRetry(() =>\n      http({\n        method: 'POST',\n        url: LMSTUDIO_URL,\n        json: true,\n        timeout: 300000,\n        headers: {\n          Authorization: 'Bearer ' + (API_KEY || 'lm-studio').trim(),\n          'content-type': 'application/json',\n        },\n        body: _body,\n      }),\n    );\n    const _ui = (r && r.usage && Number(r.usage.prompt_tokens)) || 0;\n    const _uo = (r && r.usage && Number(r.usage.completion_tokens)) || 0;\n    return { t: stripJson(\n      (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) ||\n        '',\n    ), ui: _ui, uo: _uo };\n  }\n  const r = await _withRetry(() =>\n    http({\n      method: 'POST',\n      url: OLLAMA,\n      json: true,\n      timeout: 180000,\n      body: {\n        model: MODEL,\n        prompt: prompt + chunkText,\n        stream: false,\n        format: 'json',\n        options: { temperature: 0.2, num_ctx: 12288, num_predict: _mt },\n      },\n    }),\n  );\n  return {\n    t: r && r.response ? r.response : '',\n    ui: (r && Number(r.prompt_eval_count)) || 0,\n    uo: (r && Number(r.eval_count)) || 0,\n  };\n};\n// Кооперативная отмена: фронт ставит флаг (POST /job-cancel), воркер опрашивает его между чанками\n// и выходит раньше — сохранённые чанки остаются в чекпойнте → документ станет 'partial' → «Возобновить».\nlet _cancelRequested = false;\nconst checkCancel = async () => {\n  if (_cancelRequested) return true;\n  if (_selfHttpDead) return false;\n  try {\n    const c = await http({\n      method: 'GET',\n      url: BASE + '/webhook/job-cancel',\n      qs: { job_id: jobId },\n      json: true,\n      timeout: 5000,\n    });\n    if (c && c.cancelled) _cancelRequested = true;\n  } catch (_) {}\n  return _cancelRequested;\n};\n// Состояние между проходами петли несём ЧЕРЕЗ ГРАФ (вход ноды), НЕ через job_chunks: на стендах,\n// где self-HTTP из task-runner не доходит (chunk-save молча падает), чекпойнт не накапливается и\n// петля переобрабатывала бы одно и то же бесконечно. _mc_outputs прошлого прохода приходит во входе\n// (при петле вход = выход прошлого Merge Chunks); при первом заходе вход = чанки от Build Chunks.\nconst _inItem = $input && $input.first && $input.first() ? $input.first().json || {} : {};\nconst _prevOut = _inItem && Array.isArray(_inItem._mc_outputs) ? _inItem._mc_outputs : [];\nconst _pass = (_inItem && Number(_inItem._pass)) || 0;\n// Сброс устаревшего флага отмены — ТОЛЬКО на первом проходе (_pass===0). При авто-петле (2+)\n// сбрасывать нельзя: затрём отмену, поставленную юзером между проходами.\nif (_pass === 0 && !_selfHttpDead) {\n  try {\n    await http({\n      method: 'POST',\n      url: BASE + '/webhook/chunk-save',\n      body: { job_id: jobId, chunk_index: -1, output: '' },\n      json: true,\n      timeout: 8000,\n    });\n  } catch (_) {}\n}\n// Multi-pass под лимит task-runner (60с): за заход обрабатываем чанки, пока не вышли за\n// PASS_BUDGET_MS; остальное добьёт авто-петля (If More Chunks → Build Chunks) в новом исполнении.\n// saved-чанки из чекпойнта применяются мгновенно (без LLM) и бюджет не тратят; гарантируем >=1\n// НОВЫЙ LLM-чанк за проход (первый _llmThisPass берётся всегда), иначе предохранитель ниже остановит петлю.\nconst _t0 = Date.now();\nconst total = chunks.length;\n// outputs восстанавливаем из графа (_prevOut, приоритет) и чекпойнта (saved, если self-HTTP на\n// стенде работает) — оба источника опциональны; обрабатываем только ещё не готовые (null) чанки.\n// outputs[k]: null (не начат) | { e, d, eDone, dDone, ui, uo }. Раздельные флаги eDone/dDone —\n// extract и decompose пишутся НЕЗАВИСИМО: на ТЯЖЁЛОМ чанке (огромный абзац раздела «Стадии работ»)\n// пара вызовов суммарно не влезает в watchdog 45с, а по отдельности (~20-30с) — да. extract успел →\n// сохранён → decompose добьётся следующим проходом через граф. Старый атомарный чекпойнт нормализуем.\nconst _norm = (o) => {\n  if (!o) return null;\n  if (typeof o.eDone === 'boolean' || typeof o.dDone === 'boolean')\n    return {\n      e: o.e || '',\n      d: o.d || '',\n      eDone: !!o.eDone,\n      dDone: !!o.dDone,\n      ui: Number(o.ui) || 0,\n      uo: Number(o.uo) || 0,\n    };\n  return {\n    e: o.e || '',\n    d: o.d || '',\n    eDone: true,\n    dDone: true,\n    ui: Number(o.ui) || 0,\n    uo: Number(o.uo) || 0,\n  };\n};\nconst outputs = new Array(total).fill(null);\nfor (let _k = 0; _k < total; _k++) {\n  if (_prevOut[_k]) outputs[_k] = _norm(_prevOut[_k]);\n  else if (saved[_k] !== undefined) outputs[_k] = _norm(saved[_k]);\n}\nconst _isReady = (o) => !!(o && o.eDone && o.dDone);\nconst _callsDone = () =>\n  outputs.reduce((s, o) => s + (o ? (o.eDone ? 1 : 0) + (o.dDone ? 1 : 0) : 0), 0);\nlet idx = 0,\n  done = outputs.filter(_isReady).length;\nconst _doneAtStart = done;\nconst _doneCallsStart = _callsDone();\n// HARD-дедлайн прохода < 60с task-runner: watchdog гарантирует возврат к ~PASS_BUDGET_MS с тем, что\n// успели; недобитое (в т.ч. одна половина пары) добьёт следующий проход через граф (_mc_outputs).\nlet _deadline = false;\nconst _watchdog = new Promise((res) => setTimeout(() => {\n  _deadline = true;\n  res();\n}, PASS_BUDGET_MS));\nconst worker = async () => {\n  while (idx < total) {\n    if (_deadline) break;\n    if (await checkCancel()) break;\n    const k = idx++;\n    let cur = outputs[k];\n    if (_isReady(cur)) continue;\n    if (!cur) cur = { e: '', d: '', eDone: false, dDone: false, ui: 0, uo: 0 };\n    // extract (документ-уровневые ФТ/НФТ). cur пишем СРАЗУ после вызова — если watchdog оборвёт\n    // проход до decompose, extract не потеряется (decompose добьётся следующим проходом).\n    if (!cur.eDone) {\n      try {\n        const _r = await callLLM(PROMPT, chunks[k].chunk_text || '', 8192, LMSTUDIO_EXTRACT_SCHEMA);\n        cur.e = (_r && _r.t) || '';\n        cur.ui += (_r && Number(_r.ui)) || 0;\n        cur.uo += (_r && Number(_r.uo)) || 0;\n      } catch (e) {}\n      cur.eDone = true;\n      outputs[k] = cur;\n      if (cur.e) await saveChunk(k, JSON.stringify(cur));\n    }\n    if (_deadline) break;\n    // decompose (атомарные требования по абзацам).\n    if (!cur.dDone) {\n      try {\n        const _r = await callLLM(\n          DECOMPOSE_PROMPT,\n          chunks[k].chunk_text || '',\n          4096,\n          LMSTUDIO_DECOMPOSE_SCHEMA,\n        );\n        cur.d = (_r && _r.t) || '';\n        cur.ui += (_r && Number(_r.ui)) || 0;\n        cur.uo += (_r && Number(_r.uo)) || 0;\n      } catch (e) {}\n      cur.dDone = true;\n      outputs[k] = cur;\n      if (cur.e || cur.d) await saveChunk(k, JSON.stringify(cur));\n    }\n    if (_isReady(cur)) {\n      done++;\n      await reportProgress();\n    }\n  }\n};\nawait Promise.race([\n  Promise.all(Array.from({ length: Math.min(CONC, Math.max(1, total)) }, () => worker())),\n  _watchdog,\n]);\nconst merged = mergeChunks(chunks, outputs, chapters);\nconst _activeModel =\n  PROVIDER === 'claude'\n    ? CLAUDE_MODEL\n    : PROVIDER === 'develonica'\n      ? DEVELONICA_MODEL\n      : PROVIDER === 'lmstudio'\n        ? LMSTUDIO_MODEL\n        : MODEL;\nmerged._llm_model = _activeModel;\n// Суммарные токены — по ВСЕМ чанкам (несут ui/uo, в т.ч. частично обработанные), а не за текущий проход.\nlet _sumUi = 0,\n  _sumUo = 0,\n  _sumCalls = 0;\nfor (const o of outputs) {\n  if (!o) continue;\n  _sumUi += Number(o.ui) || 0;\n  _sumUo += Number(o.uo) || 0;\n  _sumCalls += (o.eDone ? 1 : 0) + (o.dDone ? 1 : 0);\n}\nmerged._llm_usage = {\n  provider: PROVIDER,\n  model: _activeModel,\n  calls: _sumCalls,\n  input_tokens: _sumUi,\n  output_tokens: _sumUo,\n};\n// _incomplete=true → есть незавершённые чанки И за проход был прогресс (хоть один НОВЫЙ вызов) →\n// If More Chunks зациклит. Прогресс меряем по числу завершённых ВЫЗОВОВ (не готовых чанков): иначе\n// проход, успевший только extract тяжёлого чанка, выглядел бы как 0 прогресса и предохранитель встал бы.\nconst _processed = outputs.filter(_isReady).length;\nconst _progressed = _callsDone() > _doneCallsStart;\nlet _incomplete = _processed < total && !_cancelRequested && _progressed;\nmerged._pass = _pass + 1;\nif (merged._pass >= total + 8) _incomplete = false; // hard-cap проходов (раздельная запись → больше проходов)\nif (_incomplete) merged._mc_outputs = outputs;\nmerged._incomplete = _incomplete;\n// Недообработанный фрагмент = НИ extract, НИ decompose не ответили (оба пустые после retry).\n// Легитимный «нет требований» приходит как непустой JSON, потому проверяем именно пустоту строк.\nconst _failedIdx = outputs\n  .map((o, i) => (o && (String(o.d || '').trim() || String(o.e || '').trim()) ? -1 : i))\n  .filter((i) => i >= 0);\nmerged._chunk_stats = {\n  total: chunks.length,\n  failed: _failedIdx.length,\n  failed_indices: _failedIdx,\n};\nmerged._cancelled = _cancelRequested;\nif (merged._coverage.covered_paragraphs < merged._coverage.total_paragraphs)\n  console.log('[Merge Chunks] coverage gap ' + JSON.stringify(merged._coverage));\nreturn [{ json: merged }];"
+      },
+      "id": "upload--node-merge-chunks",
+      "name": "[upload] Merge Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        -128
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "more",
+              "leftValue": "={{ $json._incomplete }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "upload--node-if-more-chunks",
+      "name": "[upload] If More Chunks",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        688,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const BASE = (() => { try { const _H = ($('[upload] Webhook: POST /upload').first() && $('[upload] Webhook: POST /upload').first().json && $('[upload] Webhook: POST /upload').first().json.headers) || {}; const _h = _H['x-forwarded-host'] || _H.host; if (!_h) return 'http://localhost:5678'; const _p = String(_H['x-forwarded-proto'] || (/localhost|127\\.|:5678/.test(_h) ? 'http' : 'https')).split(',')[0].trim(); return _p + '://' + _h; } catch (_) { return 'http://localhost:5678'; } })();\n// Сохраняем сам файл (base64) в job_files через /file-save — чтобы wf_resume мог возобновить\n// обработку без участия клиента (после перезагрузки браузера File потерян). Стоим в основном\n// пути ДО Parse (бинарь ещё есть) и ДО Merge Chunks (успеваем сохранить до возможного падения).\n// Пропускаем item+binary дальше без изменений.\nconst item = $input.first();\nconst bin = item.binary || {};\nconst propName = Object.keys(bin)[0];\nconst meta = (propName && bin[propName]) || {};\nconst body = $('[upload] Webhook: POST /upload').first().json.body || {};\nlet file_b64 = '';\ntry {\n  if (propName) {\n    const buf = await this.helpers.getBinaryDataBuffer(0, propName);\n    file_b64 = buf.toString('base64');\n  }\n} catch (e) {\n  file_b64 = meta.data || '';\n}\ntry {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: BASE + '/webhook/file-save',\n    json: true,\n    timeout: 60000,\n    body: {\n      job_id: body.job_id || '',\n      document_id: body.document_id || '',\n      filename: meta.fileName || 'document',\n      mime: meta.mimeType || 'application/octet-stream',\n      file_b64: file_b64,\n      uploaded_by: $('[upload] Auth').first().json._username || '',\n    },\n  });\n} catch (_) {}\nreturn [{ json: Object.assign({}, item.json, { _file_stored: file_b64.length > 0 }), binary: bin }];"
+      },
+      "id": "upload--node-encode-file",
+      "name": "[upload] Encode File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Запрос истории документов\n(для экрана История обработанных документов)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2704,
+        1488
+      ],
+      "id": "e2ccf60c-5c74-45ab-920b-f1b01cc37b3d",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "Загрузка и обработка документа\nPOST /upload",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2672,
+        0
+      ],
+      "id": "42bbe26e-ee03-48dd-9dfe-b6f43080a475",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $json.document_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "document_id": "={{ $json.document_id }}",
+            "title": "={{ $json.title }}",
+            "filename": "={{ $json.filename }}",
+            "total_requirements": "0",
+            "graph_json": "",
+            "paragraphs_json": "",
+            "saved_at": "={{ $now.toISO() }}",
+            "status": "processing",
+            "job_id": "={{ $json.job_id }}",
+            "model": "={{ $json.pending_model }}",
+            "project_id": "={{ $json.project_id || '' }}"
+          },
+          "matchingColumns": [
+            "document_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "upload--node-persist-graph-pending",
+      "name": "[upload] Persist Graph Pending",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Запрос данных графа документа\nпо job_id (для текущего обрабатываемого документа)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2704,
+        544
+      ],
+      "id": "9f2d2b9e-99fb-4ccc-86e9-16eae5f88284",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "Запрос данных графа документа\nпо document_id (текущий граф по конкретному документу)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2704,
+        912
+      ],
+      "id": "bb5b6db1-8382-4fb8-9c40-50a162385f76",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "Запрос параграфов документа\nпо job_id (для текущего обрабатываемого документа)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -928,
+        544
+      ],
+      "id": "1f7e7673-5558-4e6f-b92f-bb770e50ef03",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "Запрос параграфов документа\nпо document_id (текущий граф по конкретному документу)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -928,
+        928
+      ],
+      "id": "45ba8710-6036-42d8-a597-6c12a78185ea",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "Запрос требований документа\nпо job_id (для текущего обрабатываемого документа)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        912,
+        576
+      ],
+      "id": "6b8b1fb2-40b0-408e-aa29-bb8d16e6cfb9",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "Запрос требований документа\nпо document_id (текущий граф по конкретному документу)",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        960,
+        944
+      ],
+      "id": "7ec9e212-f016-4c9d-86ba-535567dc34df",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "Запрос статуса задачи обработки",
+        "height": 112,
+        "width": 352
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2704,
+        1200
+      ],
+      "id": "b0809eb7-8298-43f0-bd40-94212f0368f5",
+      "name": "Sticky Note8"
+    }
+  ],
+  "connections": {
+    "[upload] Webhook: POST /upload": {
+      "main": [
+        [
+          {
+            "node": "[upload] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Auth": {
+      "main": [
+        [
+          {
+            "node": "[upload] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[upload] Respond Processing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "[upload] Docling Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[upload] Respond Auth Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Docling Config": {
+      "main": [
+        [
+          {
+            "node": "[upload] Restore Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Restore Binary": {
+      "main": [
+        [
+          {
+            "node": "[upload] Encode File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Route by Mime": {
+      "main": [
+        [
+          {
+            "node": "[upload] Read Text Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[upload] Docling Convert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Read Text Binary": {
+      "main": [
+        [
+          {
+            "node": "[upload] Parse + Generate IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Docling Convert": {
+      "main": [
+        [
+          {
+            "node": "[upload] Extract Docling MD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Extract Docling MD": {
+      "main": [
+        [
+          {
+            "node": "[upload] Parse + Generate IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Parse + Generate IDs": {
+      "main": [
+        [
+          {
+            "node": "[upload] Persist Graph Pending",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Build Everything": {
+      "main": [
+        [
+          {
+            "node": "[upload] Status: RAG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Enrich Graph": {
+      "main": [
+        [
+          {
+            "node": "[upload] Persist Job",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "[upload] Persist Graph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Persist Graph": {
+      "main": [
+        [
+          {
+            "node": "[upload] Status: Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graph] Webhook: GET /graph": {
+      "main": [
+        [
+          {
+            "node": "[graph] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graph] Auth": {
+      "main": [
+        [
+          {
+            "node": "[graph] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graph] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[graph] Fetch Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[graph] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graph] Fetch Job": {
+      "main": [
+        [
+          {
+            "node": "[graph] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graph] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[graph] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graphByDoc] Webhook: GET /graph/by-document": {
+      "main": [
+        [
+          {
+            "node": "[graphByDoc] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graphByDoc] Auth": {
+      "main": [
+        [
+          {
+            "node": "[graphByDoc] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graphByDoc] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[graphByDoc] Fetch Graph",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[graphByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graphByDoc] Fetch Graph": {
+      "main": [
+        [
+          {
+            "node": "[graphByDoc] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[graphByDoc] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[graphByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[paras] Webhook: GET /paragraphs": {
+      "main": [
+        [
+          {
+            "node": "[paras] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[paras] Auth": {
+      "main": [
+        [
+          {
+            "node": "[paras] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[paras] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[paras] Fetch Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[paras] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[paras] Fetch Job": {
+      "main": [
+        [
+          {
+            "node": "[paras] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[paras] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[paras] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[parasByDoc] Webhook: GET /paragraphs/by-document": {
+      "main": [
+        [
+          {
+            "node": "[parasByDoc] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[parasByDoc] Auth": {
+      "main": [
+        [
+          {
+            "node": "[parasByDoc] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[parasByDoc] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[parasByDoc] Fetch Paragraphs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[parasByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[parasByDoc] Fetch Paragraphs": {
+      "main": [
+        [
+          {
+            "node": "[parasByDoc] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[parasByDoc] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[parasByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[documents] Webhook: GET /files/history": {
+      "main": [
+        [
+          {
+            "node": "[documents] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[documents] Auth": {
+      "main": [
+        [
+          {
+            "node": "[documents] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[documents] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[documents] List Graphs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[documents] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[documents] List Graphs": {
+      "main": [
+        [
+          {
+            "node": "[documents] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[documents] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[documents] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Build Search Items": {
+      "main": [
+        [
+          {
+            "node": "[upload] RAG Search (sub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] RAG Search (sub)": {
+      "main": [
+        [
+          {
+            "node": "[upload] Group Search Hits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Group Search Hits": {
+      "main": [
+        [
+          {
+            "node": "[upload] Enrich Graph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Build Upsert Request": {
+      "main": [
+        [
+          {
+            "node": "[upload] RAG Upsert (sub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] RAG Upsert (sub)": {
+      "main": [
+        [
+          {
+            "node": "[upload] Build Search Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqs] Webhook: GET /requirements": {
+      "main": [
+        [
+          {
+            "node": "[reqs] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqs] Auth": {
+      "main": [
+        [
+          {
+            "node": "[reqs] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqs] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[reqs] Fetch Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[reqs] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqs] Fetch Job": {
+      "main": [
+        [
+          {
+            "node": "[reqs] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqs] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[reqs] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqsByDoc] Webhook: GET /requirements/by-document": {
+      "main": [
+        [
+          {
+            "node": "[reqsByDoc] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqsByDoc] Auth": {
+      "main": [
+        [
+          {
+            "node": "[reqsByDoc] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqsByDoc] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[reqsByDoc] Fetch Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[reqsByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqsByDoc] Fetch Job": {
+      "main": [
+        [
+          {
+            "node": "[reqsByDoc] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[reqsByDoc] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[reqsByDoc] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[jobStatus] Webhook: GET /jobs/status": {
+      "main": [
+        [
+          {
+            "node": "[jobStatus] Fetch Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[jobStatus] Fetch Status": {
+      "main": [
+        [
+          {
+            "node": "[jobStatus] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[jobStatus] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[jobStatus] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Status: Convert": {
+      "main": [
+        [
+          {
+            "node": "[upload] Route by Mime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Status: Decompose": {
+      "main": [
+        [
+          {
+            "node": "[upload] Build Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Status: Requirements": {
+      "main": [
+        [
+          {
+            "node": "[upload] Build Everything",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Status: RAG": {
+      "main": [
+        [
+          {
+            "node": "[upload] Persist Upload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "[upload] Build Upsert Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Build Chunks": {
+      "main": [
+        [
+          {
+            "node": "[upload] Merge Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Merge Chunks": {
+      "main": [
+        [
+          {
+            "node": "[upload] If More Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Persist Graph Pending": {
+      "main": [
+        [
+          {
+            "node": "[upload] Status: Decompose",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] Encode File": {
+      "main": [
+        [
+          {
+            "node": "[upload] Status: Convert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[upload] If More Chunks": {
+      "main": [
+        [
+          {
+            "node": "[upload] Merge Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[upload] Status: Requirements",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "cb6a5e9b-09f7-4791-8894-1ea6beff88be",
+  "activeVersionId": "cb6a5e9b-09f7-4791-8894-1ea6beff88be",
+  "versionCounter": 16,
+  "triggerCount": 6,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-05-28T07:10:15.190Z",
+      "createdAt": "2026-05-28T07:10:15.190Z",
+      "role": "workflow:owner",
+      "workflowId": "wf-api-documents",
+      "projectId": "TjpBNuZzN2XfgCY3",
+      "project": {
+        "updatedAt": "2026-05-28T07:10:12.505Z",
+        "createdAt": "2026-05-28T07:10:08.511Z",
+        "id": "TjpBNuZzN2XfgCY3",
+        "name": "Kirill Vlasov <kirill.vlasov@develonica.ru>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "7f97df48-f6fd-4e9f-b0dd-6ec5e5071f56"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": "Version cb6a5e9b",
+    "description": ""
+  }
+}

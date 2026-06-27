@@ -1,0 +1,481 @@
+{
+  "id": "wf-rag",
+  "name": "wf_rag",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "rag-trigger",
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [-1680, 48]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": { "__rl": true, "mode": "name", "value": "config" },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            { "keyName": "key", "condition": "eq", "keyValue": "rag_backend" }
+          ]
+        },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "rag-get-backend",
+      "name": "Get RAG Backend",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [-1440, 48],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Читает тумблер бэкенда из Get RAG Backend (config key=rag_backend, значение в колонке provider)\n// и восстанавливает исходные trigger items, добавляя поле _backend. Стоит в ОСНОВНОМ потоке\n// (Trigger → Get RAG Backend → Route Backend → If Search), чтобы Get RAG Backend гарантированно\n// выполнился до If Backend — иначе n8n executionOrder v1 может выполнить If-ветку раньше боковой\n// ноды и упасть с 'Node ... hasn't been executed'. pairedItem проставляем для реассоциации в Format Output.\nconst cfg = ($input.first() && $input.first().json) || {};\nconst backend = (cfg.provider || 'local').toString().toLowerCase() === 'develonica' ? 'develonica' : 'local';\n// Адрес/ключ Qdrant develonica — из этой же config-строки (колонки base_url/api_key), в обход $env\n// (на «чужих» стендах $env заблокирован). Пусто → дефолт URL / пропуск дедупа (см. Dedup Document Points).\nconst _ragUrl = (cfg.base_url || '').toString().trim();\nconst _ragKey = (cfg.api_key || '').toString().trim();\nreturn $('When Executed by Another Workflow').all().map((t, i) => ({\n  json: Object.assign({}, (t && t.json) || {}, { _backend: backend, _rag_qdrant_url: _ragUrl, _rag_qdrant_key: _ragKey }),\n  pairedItem: { item: i },\n}));"
+      },
+      "id": "rag-route-backend",
+      "name": "Route Backend",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1216, 48]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-search",
+              "leftValue": "={{ $json.query || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "rag-route",
+      "name": "If Search",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-992, 48]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-dev-search",
+              "leftValue": "={{ ($json._backend || 'local').toString().toLowerCase() }}",
+              "rightValue": "develonica",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "rag-backend-search",
+      "name": "If Backend Search",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-768, -288]
+    },
+    {
+      "parameters": {
+        "model": "Cloud-bge-m3",
+        "options": {}
+      },
+      "id": "rag-embeddings-dev",
+      "name": "Embeddings Search Develonica",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [-432, -304],
+      "credentials": {
+        "openAiApi": {
+          "id": "owtTWGRMjIQbSAgC",
+          "name": "Embeddings Develonica"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "arch-docs-rag",
+          "mode": "id"
+        },
+        "prompt": "={{ $json.query }}",
+        "topK": 100,
+        "options": {}
+      },
+      "id": "rag-qdrant-search-dev",
+      "name": "Qdrant Search Develonica",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [-432, -464],
+      "credentials": {
+        "qdrantApi": {
+          "id": "JV1sW2DKv9AIl9TO",
+          "name": "Qdrant Develonica"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "paraphrase-multilingual-MiniLM-L12-v2",
+        "options": {}
+      },
+      "id": "rag-embeddings-local",
+      "name": "Embeddings Search Local",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [-432, 16],
+      "credentials": {
+        "openAiApi": {
+          "id": "EuaeajNRwhJNoJGB",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "docs_chunks",
+          "mode": "id"
+        },
+        "prompt": "={{ $json.query }}",
+        "topK": 100,
+        "options": {}
+      },
+      "id": "rag-qdrant-search-local",
+      "name": "Qdrant Search Local",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [-432, -160],
+      "credentials": {
+        "qdrantApi": {
+          "id": "9qoVpWOyuVlu1NJu",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Универсальный sub-workflow поиска по Qdrant.\n// Input items: { query: str, topK?: int, threshold?: float,\n//                excludeDocumentId?: str, includeDocumentId?: str, includeDocumentIds?: str[], extra?: any }\n// Output items: один на каждый input item, в том же порядке:\n//   { _idx: int, query: str, hits: [ { score, payload: {...metadata, content} } ], extra }\n// hits отсортированы по убыванию score, отфильтрованы по threshold + (include|exclude).\n// includeDocumentIds (набор, для сводки по проекту) > includeDocumentId > excludeDocumentId.\n\nconst triggerItems = $('When Executed by Another Workflow').all();\nconst groups = triggerItems.map((t) => ({\n  query: (t.json && t.json.query) || '',\n  topK: (t.json && Number(t.json.topK)) || 5,\n  threshold: t.json && typeof t.json.threshold === 'number' ? t.json.threshold : 0,\n  exclude: (t.json && t.json.excludeDocumentId) || '',\n  include: (t.json && t.json.includeDocumentId) || '',\n  includeIds: Array.isArray(t.json && t.json.includeDocumentIds) ? t.json.includeDocumentIds.filter(Boolean) : null,\n  extra: t.json && t.json.extra,\n  hits: [],\n}));\n\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  const doc = j.document || {};\n  const meta = doc.metadata || {};\n  // pairedItem может быть {item:N}, число или undefined; для one-query кейса всё валим в groups[0]\n  let idx = 0;\n  if (groups.length > 1) {\n    if (it.pairedItem && typeof it.pairedItem.item === 'number') idx = it.pairedItem.item;\n    else if (typeof it.pairedItem === 'number') idx = it.pairedItem;\n  }\n  const g = groups[idx];\n  if (!g) continue;\n  if (g.includeIds && g.includeIds.length) {\n    if (!g.includeIds.includes(meta.document_id)) continue;\n  } else if (g.include) {\n    if (meta.document_id !== g.include) continue;\n  } else if (g.exclude && meta.document_id === g.exclude) {\n    continue;\n  }\n  if (typeof j.score === 'number' && j.score < g.threshold) continue;\n  g.hits.push({\n    score: j.score,\n    payload: Object.assign({}, meta, { content: doc.pageContent || meta.content || '' }),\n  });\n}\n\nreturn groups.map((g, i) => ({\n  json: {\n    _idx: i,\n    query: g.query,\n    hits: g.hits.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, g.topK),\n    extra: g.extra,\n  },\n}));"
+      },
+      "id": "rag-format-output",
+      "name": "Format Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-64, -304],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Идемпотентность повторного прогона (возобновление/переаплоад того же document_id): нативный\n// insert в Qdrant генерит новые point id на каждый прогон → дубли. Перед upsert сносим прежние\n// точки документа по metadata.document_id (native loader кладёт кастомные поля под metadata.*).\n// Backend-aware: коллекция и адрес зависят от тумблера config(key=rag_backend).\n//   local      → http://qdrant:6333 / docs_chunks  (открытый, без auth)\n//   develonica → rag-test Qdrant / arch-docs-rag    (url/api-key из config rag_backend.base_url/api_key,\n//                                                     в обход $env; без ключа дедуп пропускаем)\n// Первый прогон: точек нет → no-op. document_id уникален на загрузку → чужие доки не затронуты.\nconst items = $input.all();\nconst backend =\n  (((items[0] && items[0].json && items[0].json._backend) || 'local').toString().toLowerCase() === 'develonica')\n    ? 'develonica'\n    : 'local';\nconst _docId =\n  (items[0] && items[0].json && items[0].json.payload && items[0].json.payload.document_id) || '';\n\nif (_docId) {\n  let url, headers;\n  if (backend === 'develonica') {\n    const _u = ((items[0] && items[0].json && items[0].json._rag_qdrant_url) || '').toString().trim();\n    const base = String(_u || 'https://rag-test.develonica.group').replace(/\\/+$/, '');\n    const key = ((items[0] && items[0].json && items[0].json._rag_qdrant_key) || '').toString().trim();\n    url = base + '/collections/arch-docs-rag/points/delete?wait=true';\n    // Без ключа удаление вернёт 401 → дубли. Пропускаем дедуп, чтобы не сыпать ошибками.\n    headers = key ? { 'api-key': key } : null;\n  } else {\n    url = 'http://qdrant:6333/collections/docs_chunks/points/delete?wait=true';\n    headers = {};\n  }\n  if (headers) {\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST',\n        url,\n        headers,\n        json: true,\n        timeout: 20000,\n        body: { filter: { must: [{ key: 'metadata.document_id', match: { value: _docId } }] } },\n      });\n    } catch (_) {}\n  }\n}\nreturn items;"
+      },
+      "id": "rag-dedup",
+      "name": "Dedup Document Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-752, 416],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-dev-upsert",
+              "leftValue": "={{ ($json._backend || 'local').toString().toLowerCase() }}",
+              "rightValue": "develonica",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "rag-backend-upsert",
+      "name": "If Backend Upsert",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-544, 416]
+    },
+    {
+      "parameters": {
+        "model": "Cloud-bge-m3",
+        "options": {}
+      },
+      "id": "rag-upsert-embeddings-dev",
+      "name": "Embeddings Upsert Develonica",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [-144, 304],
+      "credentials": {
+        "openAiApi": {
+          "id": "owtTWGRMjIQbSAgC",
+          "name": "Embeddings Develonica"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chunkSize": 100000,
+        "options": {}
+      },
+      "id": "rag-upsert-splitter-dev",
+      "name": "No-op Splitter Develonica",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [-16, 464]
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.text }}",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {"name": "document_id", "value": "={{ $json.payload.document_id }}"},
+              {"name": "document_title", "value": "={{ $json.payload.document_title }}"},
+              {"name": "chapter_title", "value": "={{ $json.payload.chapter_title }}"},
+              {"name": "section_title", "value": "={{ $json.payload.section_title }}"},
+              {"name": "content", "value": "={{ $json.payload.content }}"},
+              {"name": "requirement_type", "value": "={{ $json.payload.requirement_type }}"},
+              {"name": "executors", "value": "={{ $json.payload.executors }}"},
+              {"name": "risk_level", "value": "={{ $json.payload.risk_level }}"},
+              {"name": "tracing", "value": "={{ $json.payload.tracing }}"},
+              {"name": "paragraph_id", "value": "={{ $json.payload.paragraph_id }}"},
+              {"name": "paragraph_global_index", "value": "={{ $json.payload.paragraph_global_index }}"}
+            ]
+          }
+        }
+      },
+      "id": "rag-upsert-loader-dev",
+      "name": "Default Data Loader Develonica",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [-16, 304]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "arch-docs-rag",
+          "mode": "list",
+          "cachedResultName": "arch-docs-rag"
+        },
+        "options": {}
+      },
+      "id": "rag-upsert-qdrant-dev",
+      "name": "Qdrant Insert Develonica",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [-144, 128],
+      "credentials": {
+        "qdrantApi": {
+          "id": "JV1sW2DKv9AIl9TO",
+          "name": "Qdrant Develonica"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "paraphrase-multilingual-MiniLM-L12-v2",
+        "options": {}
+      },
+      "id": "rag-upsert-embeddings-local",
+      "name": "Embeddings Upsert Local",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [-144, 864],
+      "credentials": {
+        "openAiApi": {
+          "id": "EuaeajNRwhJNoJGB",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chunkSize": 100000,
+        "options": {}
+      },
+      "id": "rag-upsert-splitter-local",
+      "name": "No-op Splitter Local",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [0, 1040]
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.text }}",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {"name": "document_id", "value": "={{ $json.payload.document_id }}"},
+              {"name": "document_title", "value": "={{ $json.payload.document_title }}"},
+              {"name": "chapter_title", "value": "={{ $json.payload.chapter_title }}"},
+              {"name": "section_title", "value": "={{ $json.payload.section_title }}"},
+              {"name": "content", "value": "={{ $json.payload.content }}"},
+              {"name": "requirement_type", "value": "={{ $json.payload.requirement_type }}"},
+              {"name": "executors", "value": "={{ $json.payload.executors }}"},
+              {"name": "risk_level", "value": "={{ $json.payload.risk_level }}"},
+              {"name": "tracing", "value": "={{ $json.payload.tracing }}"},
+              {"name": "paragraph_id", "value": "={{ $json.payload.paragraph_id }}"},
+              {"name": "paragraph_global_index", "value": "={{ $json.payload.paragraph_global_index }}"}
+            ]
+          }
+        }
+      },
+      "id": "rag-upsert-loader-local",
+      "name": "Default Data Loader Local",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [0, 864]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "docs_chunks",
+          "mode": "list",
+          "cachedResultName": "docs_chunks"
+        },
+        "options": {}
+      },
+      "id": "rag-upsert-qdrant-local",
+      "name": "Qdrant Insert Local",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1.3,
+      "position": [-144, 672],
+      "credentials": {
+        "qdrantApi": {
+          "id": "9qoVpWOyuVlu1NJu",
+          "name": "Qdrant account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Caller получает краткую статистику. Коллекция отражает активный бэкенд (тумблер rag_backend).\nconst backend =\n  ($('Get RAG Backend').first().json.provider || 'local').toString().toLowerCase() === 'develonica'\n    ? 'develonica'\n    : 'local';\nconst collection = backend === 'develonica' ? 'arch-docs-rag' : 'docs_chunks';\nconst trigger = $('When Executed by Another Workflow').all();\nreturn [\n  {\n    json: {\n      upserted: trigger.length,\n      status: 'ok',\n      backend,\n      collection,\n    },\n  },\n];"
+      },
+      "id": "rag-upsert-respond",
+      "name": "Respond Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [512, 416],
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [[{"node": "Get RAG Backend", "type": "main", "index": 0}]]
+    },
+    "Get RAG Backend": {
+      "main": [[{"node": "Route Backend", "type": "main", "index": 0}]]
+    },
+    "Route Backend": {
+      "main": [[{"node": "If Search", "type": "main", "index": 0}]]
+    },
+    "If Search": {
+      "main": [
+        [{"node": "If Backend Search", "type": "main", "index": 0}],
+        [{"node": "Dedup Document Points", "type": "main", "index": 0}]
+      ]
+    },
+    "If Backend Search": {
+      "main": [
+        [{"node": "Qdrant Search Develonica", "type": "main", "index": 0}],
+        [{"node": "Qdrant Search Local", "type": "main", "index": 0}]
+      ]
+    },
+    "Embeddings Search Develonica": {
+      "ai_embedding": [[{"node": "Qdrant Search Develonica", "type": "ai_embedding", "index": 0}]]
+    },
+    "Embeddings Search Local": {
+      "ai_embedding": [[{"node": "Qdrant Search Local", "type": "ai_embedding", "index": 0}]]
+    },
+    "Qdrant Search Develonica": {
+      "main": [[{"node": "Format Output", "type": "main", "index": 0}]]
+    },
+    "Qdrant Search Local": {
+      "main": [[{"node": "Format Output", "type": "main", "index": 0}]]
+    },
+    "Dedup Document Points": {
+      "main": [[{"node": "If Backend Upsert", "type": "main", "index": 0}]]
+    },
+    "If Backend Upsert": {
+      "main": [
+        [{"node": "Qdrant Insert Develonica", "type": "main", "index": 0}],
+        [{"node": "Qdrant Insert Local", "type": "main", "index": 0}]
+      ]
+    },
+    "Embeddings Upsert Develonica": {
+      "ai_embedding": [[{"node": "Qdrant Insert Develonica", "type": "ai_embedding", "index": 0}]]
+    },
+    "Default Data Loader Develonica": {
+      "ai_document": [[{"node": "Qdrant Insert Develonica", "type": "ai_document", "index": 0}]]
+    },
+    "No-op Splitter Develonica": {
+      "ai_textSplitter": [[{"node": "Default Data Loader Develonica", "type": "ai_textSplitter", "index": 0}]]
+    },
+    "Embeddings Upsert Local": {
+      "ai_embedding": [[{"node": "Qdrant Insert Local", "type": "ai_embedding", "index": 0}]]
+    },
+    "Default Data Loader Local": {
+      "ai_document": [[{"node": "Qdrant Insert Local", "type": "ai_document", "index": 0}]]
+    },
+    "No-op Splitter Local": {
+      "ai_textSplitter": [[{"node": "Default Data Loader Local", "type": "ai_textSplitter", "index": 0}]]
+    },
+    "Qdrant Insert Develonica": {
+      "main": [[{"node": "Respond Stats", "type": "main", "index": 0}]]
+    },
+    "Qdrant Insert Local": {
+      "main": [[{"node": "Respond Stats", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

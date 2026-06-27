@@ -1,0 +1,1119 @@
+{
+  "id": "wf-api-projects",
+  "name": "wf_api_projects",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "projects",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[list]-webhook",
+      "name": "[list] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        0
+      ],
+      "webhookId": "docs-projects-list"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[list]-auth",
+      "name": "[list] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[list]-if",
+      "name": "[list] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "projects"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": []
+        },
+        "returnAll": true,
+        "orderBy": true,
+        "orderByColumn": "created_at"
+      },
+      "id": "[list]-Get Projects",
+      "name": "[list] Get Projects",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": []
+        },
+        "returnAll": true
+      },
+      "id": "[list]-Get Graphs",
+      "name": "[list] Get Graphs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Считаем документы по project_id из graphs и приклеиваем счётчик к каждому проекту.\nconst projects = $('[list] Get Projects').all().map((i) => i.json).filter((r) => r && r.project_id);\nconst graphs = $('[list] Get Graphs').all().map((i) => i.json).filter((r) => r && r.project_id);\nconst counts = {};\nfor (const g of graphs) counts[g.project_id] = (counts[g.project_id] || 0) + 1;\nconst items = projects.map((pr) => ({\n  project_id: pr.project_id,\n  name: pr.name || '',\n  description: pr.description || '',\n  created_at: (pr.created_at || '').toString().slice(0, 19),\n  created_by: pr.created_by || '',\n  document_count: counts[pr.project_id] || 0,\n}));\nreturn [{ json: { _http_code: 200, _body: items } }];"
+      },
+      "id": "[list]-Build Response",
+      "name": "[list] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[list]-respond",
+      "name": "[list] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "projects",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[create]-webhook",
+      "name": "[create] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        280
+      ],
+      "webhookId": "docs-projects-create"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[create]-auth",
+      "name": "[create] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[create]-if",
+      "name": "[create] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "projects"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "keyValue": "={{ $('[create] Webhook').first().json.body.project_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $('[create] Webhook').first().json.body.project_id }}",
+            "name": "={{ $('[create] Webhook').first().json.body.name }}",
+            "description": "={{ $('[create] Webhook').first().json.body.description || '' }}",
+            "created_at": "={{ $now.toISO() }}",
+            "created_by": "={{ $json._username || '' }}"
+          },
+          "matchingColumns": [
+            "project_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "[create]-Upsert Project",
+      "name": "[create] Upsert Project",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        280
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $('[create] Webhook').first().json.body || {};\nreturn [{ json: { _http_code: 200, _body: {\n  project_id: b.project_id || '',\n  name: b.name || '',\n  description: b.description || '',\n} } }];"
+      },
+      "id": "[create]-Build Response",
+      "name": "[create] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        280
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[create]-respond",
+      "name": "[create] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -200,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "projects/update",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[update]-webhook",
+      "name": "[update] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        560
+      ],
+      "webhookId": "docs-projects-update"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[update]-auth",
+      "name": "[update] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[update]-if",
+      "name": "[update] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "projects"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "keyValue": "={{ $('[update] Webhook').first().json.body.project_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "name": "={{ $('[update] Webhook').first().json.body.name }}",
+            "description": "={{ $('[update] Webhook').first().json.body.description || '' }}"
+          },
+          "matchingColumns": [
+            "project_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "[update]-Upsert Project",
+      "name": "[update] Upsert Project",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        560
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _http_code: 200, _body: { ok: true } } }];"
+      },
+      "id": "[update]-Build Response",
+      "name": "[update] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        560
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[update]-respond",
+      "name": "[update] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -200,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "projects/delete",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[delete]-webhook",
+      "name": "[delete] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        840
+      ],
+      "webhookId": "docs-projects-delete"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[delete]-auth",
+      "name": "[delete] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        840
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[delete]-if",
+      "name": "[delete] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        840
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "projects"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "project_id",
+              "condition": "eq",
+              "keyValue": "={{ $('[delete] Webhook').first().json.body.project_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "[delete]-Del Project",
+      "name": "[delete] Del Project",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        840
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _http_code: 200, _body: { ok: true } } }];"
+      },
+      "id": "[delete]-Build Response",
+      "name": "[delete] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        840
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[delete]-respond",
+      "name": "[delete] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -200,
+        840
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "projects/assign",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "[assign]-webhook",
+      "name": "[assign] Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1300,
+        1120
+      ],
+      "webhookId": "docs-projects-assign"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-auth",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "[assign]-auth",
+      "name": "[assign] Auth",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -1080,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "leftValue": "={{ $json._http_code }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "[assign]-if",
+      "name": "[assign] If Auth OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -860,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "graphs"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "keyValue": "={{ $('[assign] Webhook').first().json.body.document_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "project_id": "={{ $('[assign] Webhook').first().json.body.project_id || '' }}"
+          },
+          "matchingColumns": [
+            "document_id"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "[assign]-Assign Doc",
+      "name": "[assign] Assign Doc",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -640,
+        1120
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _http_code: 200, _body: { ok: true } } }];"
+      },
+      "id": "[assign]-Build Response",
+      "name": "[assign] Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -420,
+        1120
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json._body !== undefined ? $json._body : null) }}",
+        "options": {
+          "responseCode": "={{ $json._http_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "[assign]-respond",
+      "name": "[assign] Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -200,
+        1120
+      ]
+    }
+  ],
+  "connections": {
+    "[list] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[list] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[list] Auth": {
+      "main": [
+        [
+          {
+            "node": "[list] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[list] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[list] Get Projects",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[list] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[list] Get Projects": {
+      "main": [
+        [
+          {
+            "node": "[list] Get Graphs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[list] Get Graphs": {
+      "main": [
+        [
+          {
+            "node": "[list] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[list] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[list] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[create] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[create] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[create] Auth": {
+      "main": [
+        [
+          {
+            "node": "[create] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[create] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[create] Upsert Project",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[create] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[create] Upsert Project": {
+      "main": [
+        [
+          {
+            "node": "[create] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[create] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[create] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[update] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[update] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[update] Auth": {
+      "main": [
+        [
+          {
+            "node": "[update] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[update] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[update] Upsert Project",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[update] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[update] Upsert Project": {
+      "main": [
+        [
+          {
+            "node": "[update] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[update] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[update] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[delete] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[delete] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[delete] Auth": {
+      "main": [
+        [
+          {
+            "node": "[delete] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[delete] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[delete] Del Project",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[delete] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[delete] Del Project": {
+      "main": [
+        [
+          {
+            "node": "[delete] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[delete] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[delete] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[assign] Webhook": {
+      "main": [
+        [
+          {
+            "node": "[assign] Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[assign] Auth": {
+      "main": [
+        [
+          {
+            "node": "[assign] If Auth OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[assign] If Auth OK": {
+      "main": [
+        [
+          {
+            "node": "[assign] Assign Doc",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "[assign] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[assign] Assign Doc": {
+      "main": [
+        [
+          {
+            "node": "[assign] Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "[assign] Build Response": {
+      "main": [
+        [
+          {
+            "node": "[assign] Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

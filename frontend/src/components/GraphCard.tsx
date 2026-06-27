@@ -35,6 +35,14 @@ export function GraphCard({
   if (!graph?.stats) return null;
 
   const similarEdges = graph.edges.filter((e) => e.type === 'similar_to');
+  const intersectEdges = graph.edges.filter((e) => e.type === 'intersects');
+  const externalNodesById = new Map(
+    graph.nodes.filter((n) => n.type === 'external').map((n) => [n.id, n]),
+  );
+  const intersectionsCount =
+    graph.stats.intersections ?? intersectEdges.length;
+  const externalDocsCount =
+    graph.stats.external_docs ?? externalNodesById.size;
 
   const handleDownload = () => {
     const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' });
@@ -63,17 +71,31 @@ export function GraphCard({
       </Box>
 
       <Grid container spacing={2} sx={{ mb: 2 }}>
-        <Grid item xs={6} sm={3}>
+        <Grid item xs={6} sm={2}>
           <Chip label={`Узлов: ${graph.stats.total_nodes}`} variant="outlined" />
         </Grid>
-        <Grid item xs={6} sm={3}>
+        <Grid item xs={6} sm={2}>
           <Chip label={`Связей: ${graph.stats.total_edges}`} variant="outlined" />
         </Grid>
-        <Grid item xs={6} sm={3}>
+        <Grid item xs={6} sm={2}>
           <Chip label={`Абзацев: ${graph.stats.paragraphs}`} variant="outlined" />
         </Grid>
-        <Grid item xs={6} sm={3}>
+        <Grid item xs={6} sm={2}>
           <Chip label={`Чанков: ${graph.stats.chunks}`} variant="outlined" />
+        </Grid>
+        <Grid item xs={6} sm={2}>
+          <Chip
+            label={`Пересечений: ${intersectionsCount}`}
+            variant="outlined"
+            sx={{ borderColor: '#c2185b', color: '#c2185b' }}
+          />
+        </Grid>
+        <Grid item xs={6} sm={2}>
+          <Chip
+            label={`Документов: ${externalDocsCount}`}
+            variant="outlined"
+            sx={{ borderColor: '#c2185b', color: '#c2185b' }}
+          />
         </Grid>
       </Grid>
 
@@ -85,8 +107,10 @@ export function GraphCard({
             <Chip size="small" label="Раздел" sx={{ bgcolor: '#388e3c', color: '#fff' }} />
             <Chip size="small" label="Абзац" sx={{ bgcolor: '#f57c00', color: '#fff' }} />
             <Chip size="small" label="Чанк" sx={{ bgcolor: '#7b1fa2', color: '#fff' }} />
+            <Chip size="small" label="Пересечение" sx={{ bgcolor: '#c2185b', color: '#fff' }} />
             <Chip size="small" label="contains" variant="outlined" sx={{ borderColor: '#90a4ae' }} />
             <Chip size="small" label="similar_to" variant="outlined" sx={{ borderColor: '#26a69a' }} />
+            <Chip size="small" label="intersects" variant="outlined" sx={{ borderColor: '#c2185b' }} />
             <Chip size="small" label="conflicts_with" variant="outlined" sx={{ borderColor: '#e53935' }} />
           </Box>
         </Box>
@@ -102,6 +126,42 @@ export function GraphCard({
               {edge.source} → {edge.target} (score {edge.weight.toFixed(2)})
             </Typography>
           ))}
+        </Box>
+      )}
+
+      {intersectEdges.length > 0 && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" gutterBottom sx={{ color: '#c2185b' }}>
+            Пересечения с другими документами (intersects) — топ 10
+          </Typography>
+          {intersectEdges
+            .slice()
+            .sort((a, b) => b.weight - a.weight)
+            .slice(0, 10)
+            .map((edge, idx) => {
+              const ext = externalNodesById.get(edge.target);
+              const src =
+                (ext?.metadata?.source_document as string | undefined) ||
+                (ext?.metadata?.document_id as string | undefined) ||
+                edge.target;
+              const preview = (ext?.content || '').slice(0, 120);
+              return (
+                <Typography
+                  key={idx}
+                  variant="caption"
+                  sx={{ display: 'block', wordBreak: 'break-word' }}
+                >
+                  {edge.source} ⇢ <b>{src}</b> (score {edge.weight.toFixed(2)})
+                  {preview && (
+                    <Box component="span" sx={{ color: 'text.secondary' }}>
+                      {' — '}
+                      {preview}
+                      {preview.length >= 120 ? '…' : ''}
+                    </Box>
+                  )}
+                </Typography>
+              );
+            })}
         </Box>
       )}
 

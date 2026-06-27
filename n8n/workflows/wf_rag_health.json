@@ -1,0 +1,118 @@
+{
+  "id": "wf-rag-health",
+  "name": "wf_rag_health",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## RAG / Qdrant health-check\n\n`GET /webhook/rag/health` (без авторизации — это probe).\n\nДва сигнала в одном ответе:\n1. **Qdrant жив + есть данные** — прямой `GET {QDRANT_URL}/collections/docs_chunks` → `points_count`, `status`.\n2. **Сквозной RAG-путь работает** — фиксированный тестовый запрос через `wf_rag` (embeddings → Qdrant search → hits).\n\nИтог в поле `status`: `ok` | `degraded` | `down`.",
+        "height": 320,
+        "width": 420
+      },
+      "id": "ragHealth--note",
+      "name": "[ragHealth] Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1040, -260]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "rag/health",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ragHealth--node-webhook",
+      "name": "[ragHealth] Webhook: GET /rag/health",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1000, 100],
+      "webhookId": "docs-rag-health"
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.QDRANT_URL || 'http://qdrant:6333') }}/collections/docs_chunks",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "ragHealth--node-qdrant-info",
+      "name": "[ragHealth] Qdrant Collection Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [-780, 100],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Фиксированный тестовый запрос для сквозной проверки пути embeddings → Qdrant → hits.\n// Вход (ответ Qdrant info) игнорируем — отчёт прочитает его по имени ноды.\nreturn [{ json: { query: 'требование', topK: 3, threshold: 0 } }];"
+      },
+      "id": "ragHealth--node-build-rag-req",
+      "name": "[ragHealth] Build RAG Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-560, 100]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "wf-rag",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "ragHealth--node-rag-search-sub",
+      "name": "[ragHealth] RAG Search (sub)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [-340, 100],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Сводим два сигнала: прямой ответ Qdrant о коллекции + результат сквозного поиска через wf_rag.\nconst q = $('[ragHealth] Qdrant Collection Info').first().json || {};\nconst qResult = q.result || null;\nconst qdrantReachable = !!qResult && !q.error;\nconst pointsCount = qResult && typeof qResult.points_count === 'number' ? qResult.points_count : null;\nconst indexedVectors = qResult && typeof qResult.indexed_vectors_count === 'number' ? qResult.indexed_vectors_count : null;\nconst collectionStatus = qResult ? (qResult.status || null) : null;\n\n// Выход wf_rag в режиме поиска: { _idx, query, hits: [...], extra }.\nconst rag = $input.first().json || {};\nconst hits = Array.isArray(rag.hits) ? rag.hits : [];\nconst searchOk = Array.isArray(rag.hits);\nconst topScore = hits.length ? hits[0].score : null;\n\nlet status = 'down';\nif (qdrantReachable) {\n  status = (pointsCount && pointsCount > 0 && hits.length > 0) ? 'ok' : 'degraded';\n}\n\nreturn [{\n  json: {\n    status,\n    qdrant: {\n      reachable: qdrantReachable,\n      collection: 'docs_chunks',\n      collection_status: collectionStatus,\n      points_count: pointsCount,\n      indexed_vectors_count: indexedVectors,\n    },\n    search: {\n      ok: searchOk,\n      query: rag.query || 'требование',\n      hits: hits.length,\n      top_score: topScore,\n    },\n  },\n}];"
+      },
+      "id": "ragHealth--node-build-report",
+      "name": "[ragHealth] Build Health Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-120, 100],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "ragHealth--node-respond",
+      "name": "[ragHealth] Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [100, 100]
+    }
+  ],
+  "connections": {
+    "[ragHealth] Webhook: GET /rag/health": {
+      "main": [[{"node": "[ragHealth] Qdrant Collection Info", "type": "main", "index": 0}]]
+    },
+    "[ragHealth] Qdrant Collection Info": {
+      "main": [[{"node": "[ragHealth] Build RAG Request", "type": "main", "index": 0}]]
+    },
+    "[ragHealth] Build RAG Request": {
+      "main": [[{"node": "[ragHealth] RAG Search (sub)", "type": "main", "index": 0}]]
+    },
+    "[ragHealth] RAG Search (sub)": {
+      "main": [[{"node": "[ragHealth] Build Health Report", "type": "main", "index": 0}]]
+    },
+    "[ragHealth] Build Health Report": {
+      "main": [[{"node": "[ragHealth] Respond 200", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

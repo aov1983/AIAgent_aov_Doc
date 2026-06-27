@@ -26,7 +26,7 @@ from .classifier import ExecutorClassifier
 from .rag_client import RAGClient, MockRAGClient
 from .rag_storage import qdrant_db, Chunk
 from .rag_search import rag_searcher
-from .graph_builder import KnowledgeGraphBuilder
+from .graph_builder import KnowledgeGraphBuilder, GraphNode as KGNode, GraphEdge as KGEdge
 
 
 # Роли пользователей с доступом к агенту (FR-01, NFR-02)
@@ -196,7 +196,7 @@ class RequirementsAgent:
                     warnings.append(f'Ошибка сохранения в RAG: {str(e)}')
 
             # Построение собственного графа знаний (FR-08) и таблицы по абзацам
-            graph_data = self._build_graph(decomposed_doc)
+            graph_data = self._build_graph(decomposed_doc, current_document_id=document_id)
             paragraphs_table = self._build_paragraphs_table(decomposed_doc)
 
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -315,7 +315,7 @@ class RequirementsAgent:
                 except Exception as e:
                     warnings.append(f'Ошибка сохранения в RAG: {str(e)}')
 
-            graph_data = self._build_graph(decomposed_doc)
+            graph_data = self._build_graph(decomposed_doc, current_document_id=document_id)
             paragraphs_table = self._build_paragraphs_table(decomposed_doc)
 
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -358,7 +358,7 @@ class RequirementsAgent:
                     similar_results = rag_searcher.search(
                         query=requirement.fact,
                         top_k=5,
-                        threshold=0.5
+                        threshold=0.3
                     )
                     
                     # Поиск дубликатов
@@ -384,7 +384,9 @@ class RequirementsAgent:
                             'similarity_score': res['similarity_score'],
                             'content': res['content'],
                             'document_id': res.get('document_id', 'unknown'),
-                            'source_document': meta.get('chapter_title')
+                            'document_title': meta.get('document_title'),
+                            'source_document': meta.get('document_title')
+                                               or meta.get('chapter_title')
                                                or meta.get('document_id')
                                                or 'unknown',
                         })
@@ -403,7 +405,7 @@ class RequirementsAgent:
                     requirement = self.decomposer.enrich_with_similarity(
                         requirement=requirement,
                         similar_items=similar_items,
-                        threshold=0.5
+                        threshold=0.3
                     )
                     
                     # Сохранение комментариев о дубликатах и противоречиях
@@ -426,6 +428,7 @@ class RequirementsAgent:
                     # Сохраняем как чанк в векторную БД через новый модуль
                     chunk_metadata = {
                         'document_id': document_id,
+                        'document_title': decomposed_doc.title,
                         'chapter_title': chapter.title,
                         'section_title': section.title,
                         'requirement_type': 'atomic',
@@ -455,7 +458,11 @@ class RequirementsAgent:
 
         return len(all_chunks)
 
-    def _build_graph(self, decomposed_doc: DecomposedDocument) -> Dict[str, Any]:
+    def _build_graph(
+        self,
+        decomposed_doc: DecomposedDocument,
+        current_document_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Сборка собственного графа знаний из декомпозированного документа.
 
         Узлы: главы / разделы / абзацы / чанки (наследуется от KnowledgeGraphBuilder).
@@ -530,7 +537,126 @@ class RequirementsAgent:
 
         if intradoc_links:
             builder.add_rag_links(intradoc_links)
-            graph = builder.to_json()
+
+        # Пересечения с другими документами из RAG (FR-05).
+        # Порог 0.3 синхронизирован с rag_searcher.search/enrich_with_similarity
+        # в _enrich_with_rag_search — иначе мэтчи, видимые в таблице абзацев,
+        # пропадали бы в графе.
+        intersections_threshold = 0.3
+        external_nodes: Dict[str, KGNode] = {}
+        intersect_edges: List[KGEdge] = []
+        unique_external_docs: set = set()
+        skipped_self_matches = 0
+
+        # Сборка «отпечатков» текущего документа для фильтра самосопоставления
+        # без перезагрузки в RAG: чанки в Qdrant сохраняются как
+        # "{fact}. Риск: {risk}. Рекомендация: {recommendation}." (см. _save_to_rag).
+        # Сравнение нормализованных префиксов отлавливает чанки той же копии
+        # документа, у которой в metadata стоит другой document_id.
+        def _norm(text: str) -> str:
+            return ' '.join((text or '').split()).lower()
+
+        self_fact_prefixes: set = set()
+        self_full_chunks: set = set()
+        self_paragraph_prefixes: set = set()
+        for chap in decomposed_doc.chapters:
+            for sec in chap.sections:
+                for req in sec.atomic_requirements:
+                    fact_norm = _norm(req.fact)
+                    if fact_norm:
+                        self_fact_prefixes.add(fact_norm[:80])
+                        full = _norm(
+                            f"{req.fact}. Риск: {req.risk}. Рекомендация: {req.recommendation}."
+                        )
+                        self_full_chunks.add(full[:160])
+                for par in sec.paragraphs:
+                    par_norm = _norm(par)
+                    if par_norm:
+                        self_paragraph_prefixes.add(par_norm[:80])
+
+        def _is_self_match(content: str) -> bool:
+            c = _norm(content)
+            if not c:
+                return False
+            head = c[:80]
+            if head in self_fact_prefixes or head in self_paragraph_prefixes:
+                return True
+            if c[:160] in self_full_chunks:
+                return True
+            return False
+
+        for chapter in decomposed_doc.chapters:
+            for section in chapter.sections:
+                for requirement in section.atomic_requirements:
+                    p_idx = requirement.tracing.get('paragraph_index')
+                    if p_idx is None or p_idx >= len(section.paragraphs):
+                        continue
+                    par_text = section.paragraphs[p_idx]
+                    if not par_text or not par_text.strip():
+                        continue
+                    par_id = builder._generate_id(par_text[:50], 'par')
+
+                    for sim in (requirement.similar_requirements or []):
+                        score = float(sim.get('similarity_score') or 0.0)
+                        if score < intersections_threshold:
+                            continue
+                        chunk_id = sim.get('id') or sim.get('chunk_id')
+                        if not chunk_id:
+                            continue
+                        sim_doc_id = sim.get('document_id')
+                        # Исключаем самосопоставление двумя путями:
+                        # 1) по document_id — если повторная загрузка переиспользует id;
+                        # 2) по содержимому — для прошлых загрузок этого же документа,
+                        #    у которых в Qdrant другой document_id.
+                        if (
+                            current_document_id
+                            and sim_doc_id
+                            and str(sim_doc_id) == str(current_document_id)
+                        ):
+                            skipped_self_matches += 1
+                            continue
+                        sim_doc_title = (sim.get('document_title') or '').strip()
+                        if (
+                            sim_doc_title
+                            and _norm(sim_doc_title) == _norm(decomposed_doc.title)
+                        ):
+                            skipped_self_matches += 1
+                            continue
+                        if _is_self_match(sim.get('content') or ''):
+                            skipped_self_matches += 1
+                            continue
+                        ext_id = f"ext_{chunk_id}"
+                        source_doc = (
+                            sim.get('source_document')
+                            or sim_doc_id
+                            or 'unknown'
+                        )
+                        unique_external_docs.add(str(source_doc))
+                        if ext_id not in external_nodes:
+                            content = sim.get('content') or ''
+                            external_nodes[ext_id] = KGNode(
+                                id=ext_id,
+                                label=f"📄 {str(source_doc)[:40]}",
+                                type='external',
+                                content=content,
+                                metadata={
+                                    'source_document': source_doc,
+                                    'document_id': sim.get('document_id'),
+                                    'chunk_id': chunk_id,
+                                    'similarity_score': score,
+                                },
+                                level=5,
+                            )
+                        intersect_edges.append(KGEdge(
+                            source=par_id,
+                            target=ext_id,
+                            type='intersects',
+                            weight=score,
+                        ))
+
+        builder.nodes.extend(external_nodes.values())
+        builder.edges.extend(intersect_edges)
+        graph = builder.to_json()
 
         # Статистика для GUI
         nodes = graph.get('nodes', [])
@@ -540,7 +666,24 @@ class RequirementsAgent:
             'total_edges': len(edges),
             'paragraphs': sum(1 for n in nodes if n.get('type') == 'paragraph'),
             'chunks': sum(1 for n in nodes if n.get('type') == 'chunk'),
+            'intersections': len(intersect_edges),
+            'external_docs': len(unique_external_docs),
         }
+
+        if not intersect_edges:
+            total_similar = sum(
+                len(req.similar_requirements or [])
+                for chap in decomposed_doc.chapters
+                for sec in chap.sections
+                for req in sec.atomic_requirements
+            )
+            logger.info(
+                "Пересечений в графе нет: similar_requirements=%d, "
+                "skipped_self_matches=%d, current_document_id=%s",
+                total_similar,
+                skipped_self_matches,
+                current_document_id,
+            )
         return graph
 
     def _build_paragraphs_table(self, decomposed_doc: DecomposedDocument) -> List[Dict[str, Any]]:

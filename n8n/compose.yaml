@@ -1,0 +1,373 @@
+name: docs-n8n
+
+# Запуск:
+#   cd n8n && docker compose up -d
+# Остановить + сохранить тома:   docker compose down
+# Сбросить всё (включая данные):  docker compose down -v
+#
+# Сервисы:
+#   - postgres   : ТОЛЬКО системные таблицы n8n (DB=n8n). Прикладные `users/uploads/jobs/graphs`
+#                  переехали в n8n Data Tables (см. n8n/sql/data_tables_bootstrap.mjs, сервис n8n-data-table-init).
+#                  Контейнер всё ещё нужен, потому что n8n настроен на DB_TYPE=postgresdb.
+#   - qdrant     : векторное хранилище для wf_rag_*  (коллекция docs_chunks создаётся qdrant-init)
+#   - embeddings : FastAPI поверх sentence-transformers (paraphrase-multilingual-MiniLM-L12-v2, 384 dim).
+#                  Даёт стабильные вектора, совместимые с уже залитой docs_chunks. Зовётся из wf_rag_* и
+#                  wf_api_documents (нода [upload] Embed Chunks). Модель прогрета в образе.
+#   - docling    : парсер PDF/DOCX в Markdown (см. ниже)
+#   - n8n        : runtime workflow'ов
+#   - n8n-data-table-init : однократно создаёт 4 Data Tables (users/uploads/jobs/graphs) и сидит demo-юзеров.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: docs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: n8n
+      # POSTGRES_DB — БД, которую создаст образ при первом старте. n8n использует её под свои таблицы.
+      # Прикладная БД `docs` больше не создаётся: данные приложения хранятся в Data Tables (в этой же БД n8n).
+      # Файлы sql/00_create_docs_db.sh и sql/schema.sql оставлены в репо как откатный артефакт, но не монтируются.
+      POSTGRES_DB: n8n
+    ports:
+      # Хостовый порт 5434 (контейнерный остаётся 5432). 5432 на хосте отдан другому проекту.
+      # На внутренние подключения n8n это не влияет: они идут по docker-сети на postgres:5432.
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # docling-serve: HTTP API над docling (https://github.com/docling-project/docling-serve).
+  # POST /v1/convert/file (multipart "files=@…") → JSON с document.md_content / json_content.
+  # Образ тяжёлый (~3-5GB при первом pull) и греется ~30-60с на старте под первый запрос.
+  # Используется тестами (n8n/tests/test_docling.py + cross-document fixtures) и
+  # планируется к интеграции в wf_api_documents upload-ветку (см. n8n/README.md).
+  docling:
+    image: ghcr.io/docling-project/docling-serve:latest
+    container_name: docs-docling
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5001/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  qdrant:
+    # Запинено: Qdrant snapshot версионно-чувствителен — restore бэкапа (см. BACKUP.md)
+    # надёжен только на том же мажоре. При апгрейде синхронно обновить и пин, и бэкапы.
+    image: qdrant/qdrant:v1.17.1
+    container_name: docs-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # У qdrant/qdrant нет curl/wget в образе — используем bash + /dev/tcp.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI поверх sentence-transformers. Принимает POST /embed { texts:[...] } → { vectors:[[...]] }.
+  # Модель paraphrase-multilingual-MiniLM-L12-v2 (384 dim) прогрета в образе на этапе build,
+  # поэтому при старте не качает ~470 МБ — старт ~5-10 сек на загрузку весов с диска.
+  # Из workflow зовётся через $env.EMBEDDINGS_URL = http://embeddings:8100/embed.
+  embeddings:
+    build:
+      context: ./embeddings_service
+    container_name: docs-embeddings
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8100/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  n8n:
+    image: n8nio/n8n:2.21.2
+    container_name: docs-n8n
+    restart: unless-stopped
+    # Корневой .env (легаси Python-приложения) — для секретов вроде ANTHROPIC_API_KEY.
+    # Путь относительно папки compose (n8n/). В .env нет N8N_*/DB_*, а литералы environment ниже
+    # имеют приоритет над env_file — конфиг n8n не перетирается, добавляются лишь ANTHROPIC_*/QDRANT_*
+    # и пр., доступные Code-нодам через $env (N8N_BLOCK_ENV_ACCESS_IN_NODE=false).
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      embeddings:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      # --- Persistence n8n в Postgres ---
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: n8n
+
+      # --- Базовая конфигурация ---
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Europe/Moscow
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_DEFAULT_BINARY_DATA_MODE: default
+      # Разрешить выражениям типа `{{ $env.QDRANT_URL }}` читать переменные окружения контейнера.
+      # Без этого Code/HttpRequest падают с `ExpressionError: access to env vars denied`,
+      # и все workflow с `$env.*` (wf_api_documents, wf_api_chat, …) перестают работать.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # --- Лимит JS Task Runner ---
+      # Code-нода [upload] Merge Chunks делает последовательные HTTP-вызовы Ollama по всем чанкам
+      # большого документа (Книга 2.6: ~26 чанков; Книга 1: 91 чанк, ~63-80с/чанк ≈ 70+ мин).
+      # Дефолтный лимит 300с убивал её на ~10-м чанке, 1800с — на ~24-м, 3600с — на ~54/91 (Книга 1).
+      # Узкое место — ДЕКОД LLM (95% времени, замер 2026-05-30), один Code-таск = весь документ.
+      # Ставим 3 часа, чтобы крупные документы (до ~150 чанков) доходили до конца.
+      N8N_RUNNERS_TASK_TIMEOUT: "10800"
+
+      # --- Data Tables ---
+      # По умолчанию суммарный лимит Data Tables = 50 МБ. Один прикладной граф документа может
+      # сериализоваться в десятки-сотни КБ → ставим 512 МБ, чтобы хватило на несколько десятков документов.
+      # Если упрётесь — поднимайте дальше или выносите `graphs` обратно в Postgres.
+      N8N_DATA_TABLES_MAX_SIZE_BYTES: "536870912"
+
+      # --- Фиксированный ключ шифрования credentials ---
+      # Без пина n8n генерит новый ключ при каждом старте → seed'ить credentials нельзя.
+      # С пином credentials, заэнкоженные этим ключом, переживают `compose down -v` (через файл-сид
+      # `credentials/docs-postgres-cred.json` + сервис n8n-import-credentials).
+      N8N_ENCRYPTION_KEY: docs-n8n-encryption-key-2026-fixed-v1
+
+      # --- Переменные, на которые ссылаются workflow'ы через $env.* (см. n8n/README.md) ---
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION_NAME: docs_chunks
+      QDRANT_API_KEY: ""
+      EMBEDDINGS_URL: http://embeddings:8100/embed
+      LLAMA3_BASE_URL: http://host.docker.internal:11434/v1
+      LLAMA3_MODEL_NAME: qwen3:8b
+      # Docling: HTTP-обёртка над docling (парсинг PDF/DOCX/таблиц в Markdown/JSON).
+      # Workflow'ы используют через $env.DOCLING_URL — см. wf_api_documents (upload-ветка).
+      DOCLING_URL: http://docling:5001/v1/convert/file
+    extra_hosts:
+      # Ollama по-прежнему запускается на хосте (модель qwen3:8b качается в ~/.ollama).
+      # Embeddings перенесён внутрь compose — обращение по имени сервиса `embeddings`.
+      - "host.docker.internal:host-gateway"
+      # Корпоративная LLM ai.develonica.group — ВНУТРЕННИЙ домен (резолвится только VPN-резолвером
+      # хоста в 10.81.2.2). Docker Desktop не наследует VPN split-DNS → из контейнера getaddrinfo
+      # даёт SERVFAIL/EAI_AGAIN, хотя маршрут до 10.81.2.2 через хост-VPN работает. Прибиваем статикой.
+      # ЕСЛИ VPN сменит IP develonica — обновить (на хосте: dscacheutil -q host -a name ai.develonica.group).
+      - "ai.develonica.group:10.81.2.2"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/workflows:ro   # удобно для `n8n import:workflow --input=/workflows`
+    # Healthcheck нужен import-сервисам как сигнал «миграции схемы n8n завершены».
+    # Без него import:credentials / import:workflow стартуют параллельно с n8n и параллельно
+    # запускают свои TypeORM-миграции — одна успевает дропнуть колонку, вторая падает.
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:5678/healthz', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Предсоздание owner-аккаунта, чтобы пропустить экран "Set up owner account".
+  # n8n 2.x не поддерживает N8N_USER_MANAGEMENT_DISABLED — owner обязателен.
+  # Дёргаем REST-эндпоинт /rest/owner/setup (то же делает UI на первом запуске).
+  # Идемпотентно: если owner уже есть, n8n вернёт 400 — игнорируем.
+  # Креды: kirill.vlasov@develonica.ru / Admin123.
+  # ⚠ email должен быть валидный (с TLD) — n8n валидирует через zod, "admin@local" не пройдёт.
+  # ⚠ пароль: ≥8 символов, минимум 1 цифра и 1 заглавная — иначе HTTP 400.
+  n8n-owner-init:
+    image: curlimages/curl:latest
+    container_name: docs-n8n-owner-init
+    depends_on:
+      n8n:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "Setting up owner account…";
+        code=$$(curl -s -o /tmp/resp -w "%{http_code}" -X POST \
+          http://n8n:5678/rest/owner/setup \
+          -H 'Content-Type: application/json' \
+          -d '{"email":"kirill.vlasov@develonica.ru","firstName":"Kirill","lastName":"Vlasov","password":"Admin123"}');
+        echo "HTTP $$code";
+        cat /tmp/resp; echo;
+        # 200 — создан, 400 — уже существует. Любой другой код — реальная ошибка.
+        if [ "$$code" = "200" ] || [ "$$code" = "400" ]; then exit 0; else exit 1; fi
+    restart: "no"
+
+  # Создание 4 прикладных Data Tables (users/uploads/jobs/graphs) и сидинг demo-юзеров.
+  # Зависит от n8n-owner-init (нужен owner, под которым логинится скрипт) и должен завершиться ДО
+  # n8n-import (workflow'ы dataTable-нодами ссылаются на таблицы по имени; при первом import имя
+  # резолвится в id — отсутствие таблицы оставит ноду в состоянии "Could not find data table").
+  # Идемпотентен: ищет существующие таблицы по имени, создаёт только недостающие; users заливает upsert'ом.
+  n8n-data-table-init:
+    image: node:20-alpine
+    container_name: docs-n8n-data-table-init
+    depends_on:
+      n8n-owner-init:
+        condition: service_completed_successfully
+    environment:
+      N8N_URL: http://n8n:5678
+      N8N_OWNER_EMAIL: kirill.vlasov@develonica.ru
+      N8N_OWNER_PASSWORD: Admin123
+      # Совпадает со списком, который был в sql/schema.sql:
+      #   architect/admin/Архитектор, analyst/admin/Аналитик, admin/admin/Администратор, devops/admin/DevOps РП
+      APP_DEMO_USERS_JSON: >-
+        [
+          {"username":"architect","password":"admin","role":"Архитектор"},
+          {"username":"analyst",  "password":"admin","role":"Аналитик"},
+          {"username":"admin",    "password":"admin","role":"Администратор"},
+          {"username":"devops",   "password":"admin","role":"DevOps РП"}
+        ]
+    volumes:
+      - ./sql/data_tables_bootstrap.mjs:/init/bootstrap.mjs:ro
+    entrypoint: ["node", "/init/bootstrap.mjs"]
+    restart: "no"
+
+  # Одноразовый импорт workflow'ов из ./workflows в БД n8n.
+  # Идемпотентен: n8n import:workflow обновляет существующие записи по id,
+  # поэтому повторный `docker compose up` не плодит дубликаты.
+  n8n-import:
+    image: n8nio/n8n:2.21.2
+    container_name: docs-n8n-import
+    depends_on:
+      postgres:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+      n8n-import-credentials:
+        condition: service_completed_successfully
+      n8n-data-table-init:
+        condition: service_completed_successfully
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: n8n
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_ENCRYPTION_KEY: docs-n8n-encryption-key-2026-fixed-v1
+    volumes:
+      - ./workflows:/workflows:ro
+    entrypoint: ["n8n"]
+    command: ["import:workflow", "--separate", "--input=/workflows"]
+    restart: "no"
+
+  # Активация всех workflow-ов после импорта.
+  # `import:workflow` ДЕАКТИВИРУЕТ все workflow-ы при каждом запуске (даже без изменений),
+  # поэтому без этого шага production-webhook-и (/upload, /jobs/status, /set-status, /auth/login...)
+  # не зарегистрируются и приложение не поднимется рабочим. Скрипт логинится в REST API и
+  # вызывает POST /rest/workflows/:id/activate { versionId } для каждого — это регистрирует
+  # триггеры вживую, рестарт n8n НЕ требуется. См. n8n/activate_workflows.mjs.
+  n8n-activate:
+    image: node:20-alpine
+    container_name: docs-n8n-activate
+    depends_on:
+      n8n-import:
+        condition: service_completed_successfully
+    environment:
+      N8N_URL: http://n8n:5678
+      N8N_OWNER_EMAIL: kirill.vlasov@develonica.ru
+      N8N_OWNER_PASSWORD: Admin123
+    volumes:
+      - ./activate_workflows.mjs:/init/activate_workflows.mjs:ro
+    entrypoint: ["node", "/init/activate_workflows.mjs"]
+    restart: "no"
+
+  # Импорт credentials до импорта workflow'ов: воркфлоу ссылаются на id `docs-postgres-cred`,
+  # без которого n8n помечает их как "Credentials missing".
+  n8n-import-credentials:
+    image: n8nio/n8n:2.21.2
+    container_name: docs-n8n-import-credentials
+    depends_on:
+      postgres:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: n8n
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_ENCRYPTION_KEY: docs-n8n-encryption-key-2026-fixed-v1
+    volumes:
+      - ./credentials:/credentials:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ -z "$(ls -A /credentials 2>/dev/null)" ]; then
+          echo "no credentials to import — папка пуста, пропускаю";
+          exit 0;
+        fi
+        n8n import:credentials --separate --input=/credentials
+    restart: "no"
+
+  # Однократно создаёт Qdrant-коллекцию `docs_chunks` с размерностью 384
+  # (под `paraphrase-multilingual-MiniLM-L12-v2` из agent/rag_storage.py).
+  qdrant-init:
+    image: curlimages/curl:latest
+    container_name: docs-qdrant-init
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        # PUT идемпотентен — на повторный запуск Qdrant ответит "already exists",
+        # это ОК, выходим с 0 в любом случае.
+        curl -s -X PUT http://qdrant:6333/collections/docs_chunks \
+          -H 'Content-Type: application/json' \
+          -d '{"vectors":{"size":384,"distance":"Cosine"}}' | tee /dev/stderr
+        echo
+        exit 0
+    restart: "no"
+
+  # SPA (Vite + React, ../frontend) собирается в статику и раздаётся nginx'ом.
+  # Тот же nginx проксирует /webhook* на сервис n8n (см. frontend/nginx.conf): фронт ходит
+  # на свой же origin, поэтому нет CORS и порт n8n (5678) не зашит в браузерный бандл.
+  # Открывать в браузере: http://localhost:8080
+  # Базовый URL бэкенда вшивается на этапе build (ARG VITE_API_URL, дефолт /webhook); чтобы
+  # пересобрать с другим адресом: docker compose build --build-arg VITE_API_URL=… frontend
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        VITE_API_URL: /webhook
+    container_name: docs-frontend
+    restart: unless-stopped
+    depends_on:
+      n8n:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  n8n_data:
